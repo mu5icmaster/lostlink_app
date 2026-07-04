@@ -28,7 +28,7 @@ class _LostItemsScreenState extends State<LostItemsScreen> {
   Widget build(BuildContext context) {
     final lostItems = sampleItems.where((item) {
       final query = searchText.toLowerCase();
-      final isLost = item.type == 'lost';
+      final isLost = item.type == 'lost' && item.status == 'Missing';
       final matchesCategory =
           selectedCategory == 'All' || item.category == selectedCategory;
       final matchesSearch =

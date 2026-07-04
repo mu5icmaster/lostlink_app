@@ -11,6 +11,7 @@ class AuthService {
   static const String allowedLecturerDomain = '@lecturer.campus.edu.my';
   static const String adminEmail = 'admin@campus.edu.my';
   static const String _usersKey = 'lost_link_users';
+  static UserModel? currentUser;
 
   static bool isValidInstitutionEmail(String email) {
     final normalized = email.toLowerCase().trim();
@@ -47,7 +48,10 @@ class AuthService {
         .toList();
   }
 
-  static Future<bool> registerUser(UserModel user) async {
+  static Future<bool> registerUser(
+    UserModel user, {
+    required String password,
+  }) async {
     final users = await loadUsers();
     final email = user.email.toLowerCase().trim();
     if (users.any((existingUser) => existingUser.email == email)) {
@@ -60,12 +64,22 @@ class AuthService {
         email: email,
         role: user.role,
         contactNumber: user.contactNumber.trim(),
-        password: user.password,
       ),
     );
 
+    final cloudSaved = await FirebaseItemService.registerUser(
+      user,
+      password: password,
+    );
+    if (!cloudSaved) {
+      throw StateError(
+        FirebaseItemService.lastAuthError ??
+            FirebaseItemService.lastFirestoreError ??
+            'Firebase registration failed',
+      );
+    }
     await _saveUsers(users);
-    return FirebaseItemService.uploadUser(user);
+    return true;
   }
 
   static Future<UserModel?> authenticate({
@@ -73,25 +87,53 @@ class AuthService {
     required String password,
   }) async {
     final normalizedEmail = email.toLowerCase().trim();
-    final users = await loadUsers();
 
+    final signedIn = await FirebaseItemService.signInUser(
+      email: normalizedEmail,
+      password: password,
+    );
+    if (!signedIn) return null;
+
+    return _resolveProfile(normalizedEmail);
+  }
+
+  static Future<UserModel?> restoreSession() async {
+    final email = FirebaseItemService.currentEmail;
+    if (email == null || !isValidInstitutionEmail(email)) return null;
+    return _resolveProfile(email.toLowerCase().trim());
+  }
+
+  static Future<UserModel> _resolveProfile(String normalizedEmail) async {
+    final users = await loadUsers();
     for (final user in users) {
-      if (user.email == normalizedEmail && user.password == password) {
+      if (user.email == normalizedEmail) {
+        currentUser = user;
         return user;
       }
     }
 
-    if (isAdminEmail(normalizedEmail) && isValidPassword(password)) {
-      return UserModel(
-        name: 'Admin',
-        email: normalizedEmail,
-        role: 'Admin',
-        contactNumber: '',
-        password: password,
-      );
+    // SharedPreferences belongs to one device. On a new device, restore the
+    // profile from Firestore after Firebase Authentication verifies the login.
+    // A minimal derived profile keeps a valid account usable if its older
+    // registration succeeded in Auth but failed to sync its Firestore profile.
+    final cloudUser = await FirebaseItemService.loadUserProfile(
+      normalizedEmail,
+    );
+    if (cloudUser != null) {
+      await FirebaseItemService.uploadUserProfile(cloudUser);
     }
-
-    return null;
+    final user =
+        cloudUser ??
+        UserModel(
+          name: normalizedEmail.split('@').first,
+          email: normalizedEmail,
+          role: roleForEmail(normalizedEmail),
+          contactNumber: '',
+        );
+    users.add(user);
+    await _saveUsers(users);
+    currentUser = user;
+    return user;
   }
 
   static Future<void> _saveUsers(List<UserModel> users) async {

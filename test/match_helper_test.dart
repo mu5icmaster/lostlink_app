@@ -6,6 +6,43 @@ import 'package:lost_link/utils/match_helper.dart';
 
 void main() {
   group('MatchHelper', () {
+    test('recognizes minor name typos and rejects distant dates', () {
+      final lost = ItemModel(
+        id: 'lost-typo',
+        name: 'Calculater',
+        category: 'Electronics',
+        color: 'Grey',
+        location: 'Lab 2',
+        description: 'Scientific calculator',
+        date: '1 Jan 2026',
+        type: 'lost',
+        status: 'Missing',
+        imageEmoji: '',
+      );
+      final found = ItemModel(
+        id: 'found-typo',
+        name: 'Calculator',
+        category: 'Electronic',
+        color: 'Gray',
+        location: 'Lab 2',
+        description: 'Scientific calculator',
+        date: '2 Jan 2026',
+        type: 'found',
+        status: 'Available',
+        imageEmoji: '',
+      );
+      final distant = ItemModel.fromJson({
+        ...found.toJson(),
+        'id': 'found-old',
+        'date': '1 Mar 2026',
+      });
+
+      expect(
+        MatchHelper.calculateMatchScore(lost, found),
+        greaterThan(MatchHelper.calculateMatchScore(lost, distant)),
+      );
+    });
+
     test('scores strongly similar lost and found items', () {
       final lostItem = ItemModel(
         id: 'lost-1',
@@ -85,6 +122,44 @@ void main() {
       expect(matches.single.item.id, strongMatch.id);
       expect(matches.single.score, greaterThanOrEqualTo(40));
     });
+
+    test('does not suggest returned or withdrawn found reports', () {
+      final lost = ItemModel(
+        id: 'lost-active',
+        name: 'Black Wallet',
+        category: 'Wallet',
+        color: 'Black',
+        location: 'Library',
+        description: 'Black wallet',
+        date: '1 Jul 2026',
+        type: 'lost',
+        status: 'Missing',
+        imageEmoji: '',
+      );
+      ItemModel foundWithStatus(String id, String status) => ItemModel(
+        id: id,
+        name: 'Black Wallet',
+        category: 'Wallet',
+        color: 'Black',
+        location: 'Library',
+        description: 'Black wallet',
+        date: '1 Jul 2026',
+        type: 'found',
+        status: status,
+        imageEmoji: '',
+      );
+
+      final matches = MatchHelper.findPossibleMatches(
+        lostItem: lost,
+        allItems: [
+          foundWithStatus('available', 'Available'),
+          foundWithStatus('returned', 'Returned'),
+          foundWithStatus('withdrawn', 'Withdrawn'),
+        ],
+      );
+
+      expect(matches.map((match) => match.item.id), ['available']);
+    });
   });
 
   group('ItemFormHelper', () {
@@ -141,8 +216,10 @@ void main() {
         id: 'claim-1',
         item: item,
         claimantName: 'Aina Rahman',
+        claimantEmail: 'aina@student.campus.edu.my',
         studentId: 'I22012345',
         proofDescription: 'My name is printed on the card.',
+        linkedLostItemId: 'lost-1',
         status: 'Pending',
       );
 
@@ -151,7 +228,9 @@ void main() {
       expect(restored.id, claim.id);
       expect(restored.item, same(item));
       expect(restored.claimantName, claim.claimantName);
+      expect(restored.claimantEmail, claim.claimantEmail);
       expect(restored.status, claim.status);
+      expect(restored.linkedLostItemId, 'lost-1');
     });
   });
 }

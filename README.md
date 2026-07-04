@@ -1,17 +1,36 @@
-# lost_link
+# LostLink
 
-Assignment for 6002CMD
+Flutter/Firebase campus lost-and-found application.
 
-## Getting Started
+## Development
 
-This project is a starting point for a Flutter application.
+```sh
+flutter pub get
+flutter analyze
+flutter test
+flutter run
+```
 
-A few resources to get you started if this is your first Flutter project:
+Enable Email/Password Authentication, Firestore, Storage, Cloud Messaging, and
+App Check in Firebase project `lostlink-4ac08`. Register the App Check debug
+token printed by debug builds; use Play Integrity for release builds.
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+Deploy backend policy after reviewing it for the target campus:
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```sh
+firebase deploy --only firestore:rules,firestore:indexes,storage
+```
+
+Cloud Messaging tokens are registered by the app. Sending background push
+notifications requires a trusted server or Cloud Function that reads those
+tokens; never place Firebase Admin credentials in this client repository.
+
+## Android release
+
+The current Firebase Android registration uses `com.example.lost_link`.
+Before publishing, create a permanent application ID, register that Android
+app in Firebase, and rerun `flutterfire configure`.
+
+Create an upload keystore, copy `android/key.properties.example` to
+`android/key.properties`, and fill in the real values. Keystores and signing
+credentials are excluded from source control.

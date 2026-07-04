@@ -4,6 +4,10 @@ import '../data/sample_claims.dart';
 import '../data/sample_items.dart';
 import '../models/item_model.dart';
 import '../models/user_model.dart';
+import '../services/auth_service.dart';
+import '../services/firebase_item_service.dart';
+import '../services/notification_service.dart';
+import '../services/storage_service.dart';
 import '../utils/item_form_helper.dart';
 import '../widgets/activity_card.dart';
 import '../widgets/home_menu_card.dart';
@@ -14,10 +18,12 @@ import 'found_item_screen.dart';
 import 'login_screen.dart';
 import 'lost_item_screen.dart';
 import 'my_reports_screen.dart';
+import 'my_claims_screen.dart';
 import 'notifications_screen.dart';
 import 'profile_screen.dart';
 import 'report_found_screen.dart';
 import 'report_lost_screen.dart';
+import 'item_detail_screen.dart';
 import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -38,7 +44,12 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {});
   }
 
-  void logout(BuildContext context) {
+  Future<void> logout(BuildContext context) async {
+    await NotificationService.dispose();
+    await StorageService.clearPrivateSessionData();
+    await FirebaseItemService.signOut();
+    AuthService.currentUser = null;
+    if (!context.mounted) return;
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(builder: (_) => const LoginScreen()),
@@ -53,7 +64,13 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   int get pendingClaimsCount {
-    return sampleClaims.where((claim) => claim.status == 'Pending').length;
+    return sampleClaims
+        .where(
+          (claim) =>
+              claim.claimantEmail == widget.currentUser.email &&
+              claim.status == 'Pending',
+        )
+        .length;
   }
 
   List<ItemModel> get recentItems {
@@ -176,7 +193,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           icon: Icons.check_circle_outline_rounded,
                         ),
                         StatusChip(
-                          text: '$pendingClaimsCount claims pending',
+                          text: '$pendingClaimsCount of my claims pending',
                           icon: Icons.pending_actions_rounded,
                         ),
                         StatusChip(
@@ -247,6 +264,16 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                   HomeMenuCard(
+                    title: 'My Claims',
+                    subtitle: 'Track claim status',
+                    icon: Icons.assignment_turned_in_outlined,
+                    color: const Color(0xFF00897B),
+                    onTap: () => goToPage(
+                      context,
+                      MyClaimsScreen(currentUser: widget.currentUser),
+                    ),
+                  ),
+                  HomeMenuCard(
                     title: 'Campus Map',
                     subtitle: 'View key places',
                     icon: Icons.map_rounded,
@@ -287,6 +314,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     iconColor: item.type == 'lost'
                         ? const Color(0xFFFF8A65)
                         : const Color(0xFF4DB6AC),
+                    onTap: () =>
+                        goToPage(context, ItemDetailScreen(item: item)),
                   ),
                   const SizedBox(height: 12),
                 ],

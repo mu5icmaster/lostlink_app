@@ -3,8 +3,11 @@ import 'package:flutter/material.dart';
 import '../data/sample_claims.dart';
 import '../models/claim_model.dart';
 import '../models/item_model.dart';
+import '../models/notification_model.dart';
 import '../services/firebase_item_service.dart';
+import '../services/auth_service.dart';
 import '../services/storage_service.dart';
+import '../data/sample_items.dart';
 
 class ClaimRequestScreen extends StatefulWidget {
   final ItemModel item;
@@ -20,6 +23,32 @@ class _ClaimRequestScreenState extends State<ClaimRequestScreen> {
   final TextEditingController studentIdController = TextEditingController();
   final TextEditingController contactController = TextEditingController();
   final TextEditingController proofController = TextEditingController();
+  final formKey = GlobalKey<FormState>();
+  String? linkedLostItemId;
+  bool isSubmitting = false;
+
+  List<ItemModel> get myOpenLostReports {
+    final user = AuthService.currentUser;
+    if (user == null) return const [];
+    return sampleItems
+        .where(
+          (item) =>
+              item.type == 'lost' &&
+              item.reporterEmail == user.email &&
+              item.status == 'Missing',
+        )
+        .toList();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    final user = AuthService.currentUser;
+    nameController.text = user?.name ?? '';
+    contactController.text = user?.contactNumber ?? '';
+    final reports = myOpenLostReports;
+    if (reports.length == 1) linkedLostItemId = reports.single.id;
+  }
 
   InputDecoration customInputDecoration(String label, String hint) {
     return InputDecoration(
@@ -44,39 +73,89 @@ class _ClaimRequestScreenState extends State<ClaimRequestScreen> {
   }
 
   Future<void> submitClaim() async {
-    if (nameController.text.trim().isEmpty ||
-        studentIdController.text.trim().isEmpty ||
-        contactController.text.trim().isEmpty ||
-        proofController.text.trim().isEmpty) {
+    final currentUser = AuthService.currentUser;
+    if (currentUser == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          content: const Text('Please fill in all fields'),
-        ),
+        const SnackBar(content: Text('Please log in again before claiming.')),
       );
       return;
     }
+
+    if (widget.item.type != 'found' || widget.item.status != 'Available') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('This item is no longer available.')),
+      );
+      return;
+    }
+    if (widget.item.reporterUid == FirebaseItemService.currentUid ||
+        widget.item.reporterEmail == currentUser.email) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('You cannot claim your own report.')),
+      );
+      return;
+    }
+
+    final alreadyClaimed = sampleClaims.any(
+      (claim) =>
+          claim.item.id == widget.item.id &&
+          claim.claimantEmail == currentUser.email &&
+          (claim.status == 'Pending' || claim.status == 'Approved'),
+    );
+    if (alreadyClaimed) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('You already have an active claim.')),
+      );
+      return;
+    }
+    if (!(formKey.currentState?.validate() ?? false) || isSubmitting) return;
+    setState(() => isSubmitting = true);
 
     final newClaim = ClaimModel(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       item: widget.item,
       claimantName: nameController.text.trim(),
+      claimantEmail: currentUser.email,
+      claimantUid: FirebaseItemService.currentUid ?? '',
+      itemOwnerUid: widget.item.reporterUid,
       studentId: studentIdController.text.trim(),
       contactInfo: contactController.text.trim(),
       proofDescription: proofController.text.trim(),
+      linkedLostItemId: linkedLostItemId,
       status: 'Pending',
+      createdAtMillis: DateTime.now().millisecondsSinceEpoch,
     );
 
-    widget.item.status = 'Pending Claim';
     sampleClaims.add(newClaim);
     await StorageService.saveAll();
-    await FirebaseItemService.uploadClaim(newClaim);
-    await FirebaseItemService.uploadItem(item: widget.item);
+    final uploaded = await FirebaseItemService.uploadClaim(newClaim);
+    if (!uploaded) {
+      sampleClaims.removeWhere((claim) => claim.id == newClaim.id);
+      await StorageService.saveClaims();
+      if (!mounted) return;
+      setState(() => isSubmitting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'The claim could not be submitted. Check your connection and try again.',
+          ),
+        ),
+      );
+      return;
+    }
+    await FirebaseItemService.uploadNotification(
+      NotificationModel(
+        id: 'claim-${newClaim.id}',
+        recipientUid: widget.item.reporterUid,
+        title: 'New claim request',
+        body: '${currentUser.name} submitted a claim for ${widget.item.name}.',
+        type: 'claim',
+        itemId: widget.item.id,
+        createdAtMillis: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
 
     if (!mounted) return;
+    setState(() => isSubmitting = false);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         behavior: SnackBarBehavior.floating,
@@ -164,60 +243,99 @@ class _ClaimRequestScreenState extends State<ClaimRequestScreen> {
                   ),
                 ],
               ),
-              child: Column(
-                children: [
-                  TextField(
-                    controller: nameController,
-                    decoration: customInputDecoration(
-                      'Full Name',
-                      'Example: Tan Mei Ling',
+              child: Form(
+                key: formKey,
+                child: Column(
+                  children: [
+                    TextFormField(
+                      controller: nameController,
+                      textInputAction: TextInputAction.next,
+                      validator: requiredValue,
+                      decoration: customInputDecoration(
+                        'Full Name',
+                        'Example: Tan Mei Ling',
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 14),
-                  TextField(
-                    controller: studentIdController,
-                    decoration: customInputDecoration(
-                      'Student or Staff ID',
-                      'Example: I22012345',
+                    const SizedBox(height: 14),
+                    TextFormField(
+                      controller: studentIdController,
+                      textInputAction: TextInputAction.next,
+                      validator: requiredValue,
+                      decoration: customInputDecoration(
+                        'Student or Staff ID',
+                        'Example: I22012345',
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 14),
-                  TextField(
-                    controller: contactController,
-                    keyboardType: TextInputType.phone,
-                    decoration: customInputDecoration(
-                      'Contact Details',
-                      'Phone or email for claim updates',
+                    const SizedBox(height: 14),
+                    TextFormField(
+                      controller: contactController,
+                      keyboardType: TextInputType.phone,
+                      autofillHints: const [AutofillHints.telephoneNumber],
+                      textInputAction: TextInputAction.next,
+                      validator: requiredValue,
+                      decoration: customInputDecoration(
+                        'Contact Details',
+                        'Phone or email for claim updates',
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 14),
-                  TextField(
-                    controller: proofController,
-                    maxLines: 5,
-                    decoration: customInputDecoration(
-                      'Proof of Ownership',
-                      'Describe special details only the owner would know',
+                    const SizedBox(height: 14),
+                    if (myOpenLostReports.isNotEmpty) ...[
+                      DropdownButtonFormField<String?>(
+                        initialValue: linkedLostItemId,
+                        decoration: customInputDecoration(
+                          'Link your lost report (optional)',
+                          'Provides supporting report details',
+                        ),
+                        items: [
+                          const DropdownMenuItem<String?>(
+                            value: null,
+                            child: Text('No linked report'),
+                          ),
+                          ...myOpenLostReports.map(
+                            (item) => DropdownMenuItem<String?>(
+                              value: item.id,
+                              child: Text(item.name),
+                            ),
+                          ),
+                        ],
+                        onChanged: (value) =>
+                            setState(() => linkedLostItemId = value),
+                      ),
+                      const SizedBox(height: 14),
+                    ],
+                    TextFormField(
+                      controller: proofController,
+                      maxLines: 5,
+                      validator: requiredValue,
+                      decoration: customInputDecoration(
+                        'Proof of Ownership',
+                        'Describe special details only the owner would know',
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 20),
-                  SizedBox(
-                    width: double.infinity,
-                    height: 56,
-                    child: ElevatedButton.icon(
-                      onPressed: submitClaim,
-                      icon: const Icon(Icons.send_rounded),
-                      label: const Text('Submit Claim Request'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: themeColor,
-                        foregroundColor: Colors.white,
-                        elevation: 0,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(18),
+                    const SizedBox(height: 20),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 56,
+                      child: ElevatedButton.icon(
+                        onPressed: isSubmitting ? null : submitClaim,
+                        icon: const Icon(Icons.send_rounded),
+                        label: Text(
+                          isSubmitting
+                              ? 'Submitting...'
+                              : 'Submit Claim Request',
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: themeColor,
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(18),
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ],
@@ -225,4 +343,7 @@ class _ClaimRequestScreenState extends State<ClaimRequestScreen> {
       ),
     );
   }
+
+  String? requiredValue(String? value) =>
+      value == null || value.trim().isEmpty ? 'This field is required' : null;
 }

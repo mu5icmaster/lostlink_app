@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../data/sample_items.dart';
+import '../data/sample_claims.dart';
+import '../data/app_records.dart';
 import '../models/item_model.dart';
 import '../services/firebase_item_service.dart';
 import '../services/storage_service.dart';
@@ -22,6 +24,8 @@ class _ManageItemsScreenState extends State<ManageItemsScreen> {
     'Pending Claim',
     'Claimed',
     'Returned',
+    'Withdrawn',
+    'Expired',
     'Rejected',
   ];
 
@@ -68,8 +72,12 @@ class _ManageItemsScreenState extends State<ManageItemsScreen> {
 
     setState(() {
       sampleItems.removeWhere((existingItem) => existingItem.id == item.id);
+      sampleClaims.removeWhere((claim) => claim.item.id == item.id);
+      chatMessages.removeWhere((message) => message.itemId == item.id);
+      abuseReports.removeWhere((report) => report.itemId == item.id);
+      thankYouMessages.removeWhere((message) => message.itemId == item.id);
     });
-    await StorageService.saveItems();
+    await StorageService.saveAll();
     await FirebaseItemService.deleteItem(item.id);
   }
 

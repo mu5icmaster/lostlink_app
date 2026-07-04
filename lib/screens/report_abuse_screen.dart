@@ -35,6 +35,7 @@ class _ReportAbuseScreenState extends State<ReportAbuseScreen> {
       itemId: widget.item.id,
       itemName: widget.item.name,
       reporterEmail: reporterController.text.trim(),
+      reporterUid: FirebaseItemService.currentUid ?? '',
       reason: reason,
       details: detailsController.text.trim(),
       createdAt: ItemFormHelper.formattedToday(),

@@ -27,7 +27,9 @@ class _FoundItemsScreenState extends State<FoundItemsScreen> {
   Widget build(BuildContext context) {
     final foundItems = sampleItems.where((item) {
       final query = searchText.toLowerCase();
-      final isFound = item.type == 'found';
+      final isFound =
+          item.type == 'found' &&
+          (item.status == 'Available' || item.status == 'Claimed');
       final matchesCategory =
           selectedCategory == 'All' || item.category == selectedCategory;
       final matchesSearch =

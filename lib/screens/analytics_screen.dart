@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../data/sample_items.dart';
+import '../data/sample_claims.dart';
 
 class AnalyticsScreen extends StatelessWidget {
   const AnalyticsScreen({super.key});
@@ -17,8 +18,8 @@ class AnalyticsScreen extends StatelessWidget {
     final returnedCount = sampleItems
         .where((item) => item.status == 'Returned' || item.status == 'Claimed')
         .length;
-    final pendingCount = sampleItems
-        .where((item) => item.status == 'Pending Claim')
+    final pendingCount = sampleClaims
+        .where((claim) => claim.status == 'Pending')
         .length;
 
     return Scaffold(

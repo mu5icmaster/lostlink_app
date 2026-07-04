@@ -11,6 +11,7 @@ import '../models/user_model.dart';
 import '../models/abuse_report_model.dart';
 import '../models/thank_you_model.dart';
 import '../models/chat_message_model.dart';
+import '../models/notification_model.dart';
 import '../firebase_options.dart';
 
 class FirebaseItemService {
@@ -20,34 +21,29 @@ class FirebaseItemService {
   static bool lastFirestoreWriteSucceeded = false;
   static String? lastFirestoreError;
   static String? lastStorageError;
+  static String? lastAuthError;
+  static String? lastAuthErrorCode;
 
   static bool get isAvailable => _initialized;
   static bool get isFirestoreAvailable => _initialized && !_firestoreDisabled;
   static String? get lastInitializationError =>
       _initializationError?.toString();
+  static String? get currentUid => FirebaseAuth.instance.currentUser?.uid;
+  static String? get currentEmail => FirebaseAuth.instance.currentUser?.email;
 
   static Future<void> initialize() async {
-    if (_initialized) {
-      await _ensureFirebaseAuth();
-      return;
-    }
+    if (_initialized) return;
     if (_initializationError != null) return;
 
     try {
       await Firebase.initializeApp(
         options: DefaultFirebaseOptions.currentPlatform,
       );
-      await _ensureFirebaseAuth();
       _initialized = true;
     } catch (error) {
       _initializationError = error;
       lastFirestoreError = error.toString();
     }
-  }
-
-  static Future<void> _ensureFirebaseAuth() async {
-    if (FirebaseAuth.instance.currentUser != null) return;
-    await FirebaseAuth.instance.signInAnonymously();
   }
 
   static Future<ItemModel> uploadItem({
@@ -61,22 +57,44 @@ class FirebaseItemService {
       return item;
     }
 
-    final firebaseData = item.toJson()..remove('localImagePath');
+    final firebaseData = item.toJson()
+      ..remove('localImagePath')
+      ..remove('contactInfo')
+      ..remove('keptAt');
     firebaseData.addAll({
       'title': item.name,
       'createdBy': FirebaseAuth.instance.currentUser?.uid ?? '',
       'createdByEmail': item.reporterEmail,
+      'reporterUid': item.reporterUid.isEmpty
+          ? FirebaseAuth.instance.currentUser?.uid ?? ''
+          : item.reporterUid,
       'updatedAt': FieldValue.serverTimestamp(),
+      // Remove legacy public copies now that these fields live in itemPrivate.
+      'contactInfo': FieldValue.delete(),
+      'keptAt': FieldValue.delete(),
     });
     if (includeCreatedAt) {
       firebaseData['createdAt'] = FieldValue.serverTimestamp();
     }
 
-    lastFirestoreWriteSucceeded = await _safeFirestoreWrite(() {
-      return FirebaseFirestore.instance
-          .collection('items')
-          .doc(item.id)
-          .set(firebaseData, SetOptions(merge: true));
+    lastFirestoreWriteSucceeded = await _safeFirestoreWrite(() async {
+      final firestore = FirebaseFirestore.instance;
+      final batch = firestore.batch();
+      batch.set(
+        firestore.collection('items').doc(item.id),
+        firebaseData,
+        SetOptions(merge: true),
+      );
+      batch.set(firestore.collection('itemPrivate').doc(item.id), {
+        'itemId': item.id,
+        'ownerUid': item.reporterUid.isEmpty
+            ? FirebaseAuth.instance.currentUser?.uid ?? ''
+            : item.reporterUid,
+        'contactInfo': item.contactInfo,
+        'keptAt': item.keptAt,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      await batch.commit();
     });
 
     return item;
@@ -90,29 +108,187 @@ class FirebaseItemService {
       return false;
     }
 
-    lastFirestoreWriteSucceeded = await _safeFirestoreWrite(() {
-      return FirebaseFirestore.instance.collection('claims').doc(claim.id).set({
+    lastFirestoreWriteSucceeded = await _safeFirestoreWrite(() async {
+      final firestore = FirebaseFirestore.instance;
+      await firestore.collection('claims').doc(claim.id).set({
         ...claim.toJson(),
+        'claimantUid': claim.claimantUid.isEmpty
+            ? FirebaseAuth.instance.currentUser?.uid ?? ''
+            : claim.claimantUid,
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
+      final participants = [
+        claim.claimantUid,
+        claim.itemOwnerUid,
+      ].where((uid) => uid.isNotEmpty).toSet().toList();
+      final chat = firestore.collection('itemChats').doc(claim.id);
+      await chat.set({
+        'itemId': claim.item.id,
+        'claimId': claim.id,
+        'participantUids': participants,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
     });
     return lastFirestoreWriteSucceeded;
   }
 
-  static Future<bool> uploadUser(UserModel user) async {
+  static Future<bool> grantItemPrivateAccess({
+    required String itemId,
+    required String claimantUid,
+  }) async {
+    if (claimantUid.isEmpty) return false;
+    await initialize();
+    return _safeFirestoreWrite(() {
+      return FirebaseFirestore.instance
+          .collection('itemPrivate')
+          .doc(itemId)
+          .set({
+            'approvedClaimantUids': FieldValue.arrayUnion([claimantUid]),
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+    });
+  }
+
+  static Future<bool> registerUser(
+    UserModel user, {
+    required String password,
+  }) async {
     await initialize();
     _resetLastWrite();
+    lastAuthError = null;
+    lastAuthErrorCode = null;
+    if (!_initialized) {
+      lastAuthError = lastInitializationError ?? 'Firebase unavailable';
+      return false;
+    }
+
+    try {
+      await FirebaseAuth.instance.createUserWithEmailAndPassword(
+        email: user.email,
+        password: password,
+      );
+      // Authentication is already complete at this point. A profile sync
+      // failure must not make the caller retry account creation, because that
+      // would only produce email-already-in-use for the account just created.
+      await uploadUserProfile(user);
+      return true;
+    } on FirebaseAuthException catch (error) {
+      if (error.code == 'email-already-in-use') {
+        try {
+          await FirebaseAuth.instance.signInWithEmailAndPassword(
+            email: user.email,
+            password: password,
+          );
+          await uploadUserProfile(user);
+          return true;
+        } on FirebaseAuthException catch (signInError) {
+          lastAuthErrorCode = signInError.code;
+          lastAuthError = signInError.message ?? signInError.code;
+          return false;
+        }
+      }
+      lastAuthErrorCode = error.code;
+      lastAuthError = error.message ?? error.code;
+      return false;
+    }
+  }
+
+  static Future<bool> signInUser({
+    required String email,
+    required String password,
+  }) async {
+    await initialize();
+    lastAuthError = null;
+    lastAuthErrorCode = null;
+    if (!_initialized) {
+      lastAuthError = lastInitializationError ?? 'Firebase unavailable';
+      return false;
+    }
+
+    try {
+      await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
+      return true;
+    } on FirebaseAuthException catch (error) {
+      lastAuthErrorCode = error.code;
+      lastAuthError = error.message ?? error.code;
+      return false;
+    }
+  }
+
+  static Future<void> signOut() => FirebaseAuth.instance.signOut();
+
+  static Future<void> sendPasswordReset(String email) {
+    return FirebaseAuth.instance.sendPasswordResetEmail(
+      email: email.toLowerCase().trim(),
+    );
+  }
+
+  static Future<bool> sendEmailVerification() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return false;
+    await user.reload();
+    if (FirebaseAuth.instance.currentUser?.emailVerified ?? false) return true;
+    await FirebaseAuth.instance.currentUser!.sendEmailVerification();
+    return true;
+  }
+
+  static Future<void> deleteCurrentAccount() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    await FirebaseFirestore.instance.collection('users').doc(user.uid).delete();
+    await user.delete();
+  }
+
+  static Future<UserModel?> loadUserProfile(String email) async {
+    await initialize();
+    if (!_initialized || FirebaseAuth.instance.currentUser == null) return null;
+
+    try {
+      final users = FirebaseFirestore.instance.collection('users');
+      final uid = FirebaseAuth.instance.currentUser!.uid;
+      var data = (await users.doc(uid).get()).data();
+      final completeProfile =
+          data != null &&
+          data['name'] is String &&
+          data['email'] is String &&
+          data['role'] is String;
+      // Read legacy email-keyed profiles during migration.
+      if (!completeProfile) {
+        data = (await users.doc(email.toLowerCase().trim()).get()).data();
+      }
+      if (data == null) return null;
+      lastFirestoreError = null;
+      return UserModel.fromJson(data);
+    } on FirebaseException catch (error) {
+      lastFirestoreError = error.message ?? error.code;
+      return null;
+    } catch (_) {
+      lastFirestoreError = 'Could not load the user profile';
+      return null;
+    }
+  }
+
+  static Future<bool> uploadUserProfile(UserModel user) async {
+    final data = user.toJson()..remove('password');
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      lastFirestoreError = 'No authenticated user for profile sync';
+      return false;
+    }
     if (!isFirestoreAvailable) {
       lastFirestoreError = lastInitializationError ?? 'Firestore unavailable';
       return false;
     }
 
-    final data = user.toJson()..remove('password');
     lastFirestoreWriteSucceeded = await _safeFirestoreWrite(() {
-      return FirebaseFirestore.instance.collection('users').doc(user.email).set(
-        {...data, 'updatedAt': FieldValue.serverTimestamp()},
-        SetOptions(merge: true),
-      );
+      return FirebaseFirestore.instance.collection('users').doc(uid).set({
+        ...data,
+        'uid': uid,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
     });
     return lastFirestoreWriteSucceeded;
   }
@@ -141,7 +317,7 @@ class FirebaseItemService {
       lastFirestoreWriteSucceeded = await _safeFirestoreWrite(() {
         return FirebaseFirestore.instance
             .collection('users')
-            .doc(userEmail)
+            .doc(user.uid)
             .set({
               'profileImageUrl': downloadUrl,
               'profileImagePath': storagePath,
@@ -221,6 +397,30 @@ class FirebaseItemService {
     return lastFirestoreWriteSucceeded;
   }
 
+  static Future<bool> uploadNotification(NotificationModel notification) async {
+    await initialize();
+    if (!isFirestoreAvailable || notification.recipientUid.isEmpty) {
+      return false;
+    }
+    return _safeFirestoreWrite(() {
+      return FirebaseFirestore.instance
+          .collection('notifications')
+          .doc(notification.id)
+          .set({
+            ...notification.toJson(),
+            'createdByUid': FirebaseAuth.instance.currentUser?.uid,
+            'createdAt': FieldValue.serverTimestamp(),
+          });
+    });
+  }
+
+  static Future<void> markNotificationRead(String id) {
+    return FirebaseFirestore.instance
+        .collection('notifications')
+        .doc(id)
+        .update({'isRead': true, 'readAt': FieldValue.serverTimestamp()});
+  }
+
   static Future<bool> deleteItem(String itemId) async {
     await initialize();
     _resetLastWrite();
@@ -229,11 +429,34 @@ class FirebaseItemService {
       return false;
     }
 
-    lastFirestoreWriteSucceeded = await _safeFirestoreWrite(() {
-      return FirebaseFirestore.instance
-          .collection('items')
-          .doc(itemId)
-          .delete();
+    lastFirestoreWriteSucceeded = await _safeFirestoreWrite(() async {
+      final firestore = FirebaseFirestore.instance;
+      final related = await Future.wait([
+        firestore.collection('claims').where('itemId', isEqualTo: itemId).get(),
+        firestore
+            .collection('abuseReports')
+            .where('itemId', isEqualTo: itemId)
+            .get(),
+        firestore
+            .collection('thankYouMessages')
+            .where('itemId', isEqualTo: itemId)
+            .get(),
+        firestore
+            .collection('itemChats')
+            .doc(itemId)
+            .collection('messages')
+            .get(),
+      ]);
+      final batch = firestore.batch();
+      batch.delete(firestore.collection('items').doc(itemId));
+      batch.delete(firestore.collection('itemPrivate').doc(itemId));
+      batch.delete(firestore.collection('itemChats').doc(itemId));
+      for (final snapshot in related) {
+        for (final document in snapshot.docs) {
+          batch.delete(document.reference);
+        }
+      }
+      await batch.commit();
     });
     return lastFirestoreWriteSucceeded;
   }

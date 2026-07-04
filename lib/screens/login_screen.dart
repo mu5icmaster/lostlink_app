@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../models/user_model.dart';
 import '../services/auth_service.dart';
+import '../services/firebase_item_service.dart';
+import '../services/storage_service.dart';
+import '../services/notification_service.dart';
 import 'home_screen.dart';
 import 'register_screen.dart';
 
@@ -72,9 +75,24 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     if (user == null) {
-      showMessage('Account not found. Create an account first.');
+      final authCode = FirebaseItemService.lastAuthErrorCode;
+      if (authCode == 'invalid-credential' ||
+          authCode == 'wrong-password' ||
+          authCode == 'user-not-found') {
+        showMessage('Incorrect email or password.');
+      } else if (authCode == 'network-request-failed') {
+        showMessage('Unable to reach Firebase. Check your connection.');
+      } else {
+        showMessage(
+          FirebaseItemService.lastAuthError ?? 'Authentication failed.',
+        );
+      }
       return;
     }
+
+    await StorageService.syncFromCloud();
+    await NotificationService.initializeForCurrentUser();
+    if (!mounted) return;
 
     Navigator.pushReplacement(
       context,
@@ -228,6 +246,10 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
               ),
               const SizedBox(height: 12),
+              TextButton(
+                onPressed: isLoading ? null : _sendPasswordReset,
+                child: const Text('Forgot password?'),
+              ),
               SizedBox(
                 width: double.infinity,
                 height: 52,
@@ -266,5 +288,19 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _sendPasswordReset() async {
+    final email = emailController.text.trim();
+    if (!AuthService.isValidInstitutionEmail(email)) {
+      showMessage('Enter your campus email first.');
+      return;
+    }
+    try {
+      await FirebaseItemService.sendPasswordReset(email);
+      if (mounted) showMessage('Password reset email sent.');
+    } catch (_) {
+      if (mounted) showMessage('Could not send the password reset email.');
+    }
   }
 }

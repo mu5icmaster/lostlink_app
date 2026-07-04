@@ -20,7 +20,7 @@ class StorageService {
   static const String _thankYouMessagesKey = 'lost_link_thank_you_messages';
   static const String _chatMessagesKey = 'lost_link_chat_messages';
 
-  static Future<void> loadData() async {
+  static Future<void> loadData({bool syncCloud = false}) async {
     final prefs = await SharedPreferences.getInstance();
     final itemsJson = prefs.getString(_itemsKey);
     final claimsJson = prefs.getString(_claimsKey);
@@ -28,67 +28,50 @@ class StorageService {
     final thankYouMessagesJson = prefs.getString(_thankYouMessagesKey);
     final chatMessagesJson = prefs.getString(_chatMessagesKey);
 
-    if (itemsJson != null) {
-      final decodedItems = jsonDecode(itemsJson) as List<dynamic>;
+    final decodedItems = _decodeList(itemsJson);
+    if (decodedItems != null) {
       sampleItems
         ..clear()
-        ..addAll(
-          decodedItems.map(
-            (item) => ItemModel.fromJson(item as Map<String, dynamic>),
-          ),
-        );
+        ..addAll(_parseRecords(decodedItems, ItemModel.fromJson));
     }
 
-    if (claimsJson != null) {
-      final decodedClaims = jsonDecode(claimsJson) as List<dynamic>;
+    final decodedClaims = _decodeList(claimsJson);
+    if (decodedClaims != null) {
       sampleClaims
         ..clear()
         ..addAll(
-          decodedClaims.map(
-            (claim) =>
-                ClaimModel.fromJson(claim as Map<String, dynamic>, sampleItems),
+          _parseRecords(
+            decodedClaims,
+            (claim) => ClaimModel.fromJson(claim, sampleItems),
           ),
         );
     }
 
-    if (abuseReportsJson != null) {
-      final decodedReports = jsonDecode(abuseReportsJson) as List<dynamic>;
+    final decodedReports = _decodeList(abuseReportsJson);
+    if (decodedReports != null) {
       abuseReports
         ..clear()
-        ..addAll(
-          decodedReports.map(
-            (report) =>
-                AbuseReportModel.fromJson(report as Map<String, dynamic>),
-          ),
-        );
+        ..addAll(_parseRecords(decodedReports, AbuseReportModel.fromJson));
     }
 
-    if (thankYouMessagesJson != null) {
-      final decodedMessages = jsonDecode(thankYouMessagesJson) as List<dynamic>;
+    final decodedThankYouMessages = _decodeList(thankYouMessagesJson);
+    if (decodedThankYouMessages != null) {
       thankYouMessages
         ..clear()
         ..addAll(
-          decodedMessages.map(
-            (message) =>
-                ThankYouModel.fromJson(message as Map<String, dynamic>),
-          ),
+          _parseRecords(decodedThankYouMessages, ThankYouModel.fromJson),
         );
     }
 
-    if (chatMessagesJson != null) {
-      final decodedMessages = jsonDecode(chatMessagesJson) as List<dynamic>;
+    final decodedChatMessages = _decodeList(chatMessagesJson);
+    if (decodedChatMessages != null) {
       chatMessages
         ..clear()
-        ..addAll(
-          decodedMessages.map(
-            (message) =>
-                ChatMessageModel.fromJson(message as Map<String, dynamic>),
-          ),
-        );
+        ..addAll(_parseRecords(decodedChatMessages, ChatMessageModel.fromJson));
     }
 
+    if (syncCloud) await syncFromCloud();
     await expireOldItems();
-    await syncFromCloud();
   }
 
   static Future<void> syncFromCloud() async {
@@ -96,70 +79,99 @@ class StorageService {
     if (!FirebaseItemService.isFirestoreAvailable) return;
 
     try {
-      final itemDocs = await FirebaseFirestore.instance
-          .collection('items')
-          .get();
-      if (itemDocs.docs.isNotEmpty) {
-        sampleItems
-          ..clear()
-          ..addAll(
-            itemDocs.docs.map((doc) {
-              return ItemModel.fromJson(doc.data());
-            }),
-          );
-      }
-
-      final claimDocs = await FirebaseFirestore.instance
+      final firestore = FirebaseFirestore.instance;
+      final uid = FirebaseItemService.currentUid;
+      if (uid == null) return;
+      final ownedClaims = await firestore
           .collection('claims')
+          .where('itemOwnerUid', isEqualTo: uid)
           .get();
-      if (claimDocs.docs.isNotEmpty) {
-        sampleClaims
-          ..clear()
-          ..addAll(
-            claimDocs.docs.map((doc) {
-              return ClaimModel.fromJson(doc.data(), sampleItems);
-            }),
-          );
-      }
+      final submittedClaims = await firestore
+          .collection('claims')
+          .where('claimantUid', isEqualTo: uid)
+          .get();
+      final privateItemSnapshots =
+          FirebaseItemService.currentEmail == 'admin@campus.edu.my'
+          ? [await firestore.collection('itemPrivate').get()]
+          : await Future.wait([
+              firestore
+                  .collection('itemPrivate')
+                  .where('ownerUid', isEqualTo: uid)
+                  .get(),
+              firestore
+                  .collection('itemPrivate')
+                  .where('approvedClaimantUids', arrayContains: uid)
+                  .get(),
+            ]);
+      final results = await Future.wait([
+        firestore.collection('items').get(),
+        firestore
+            .collection('abuseReports')
+            .where('reporterUid', isEqualTo: uid)
+            .get(),
+        firestore
+            .collection('thankYouMessages')
+            .where(
+              Filter.or(
+                Filter('fromUid', isEqualTo: uid),
+                Filter('toUid', isEqualTo: uid),
+              ),
+            )
+            .get(),
+      ]);
 
-      final abuseReportDocs = await FirebaseFirestore.instance
-          .collection('abuseReports')
-          .get();
-      if (abuseReportDocs.docs.isNotEmpty) {
-        abuseReports
-          ..clear()
-          ..addAll(
-            abuseReportDocs.docs.map((doc) {
-              return AbuseReportModel.fromJson(doc.data());
-            }),
-          );
-      }
+      final privateItems = <String, Map<String, dynamic>>{
+        for (final doc in privateItemSnapshots.expand(
+          (snapshot) => snapshot.docs,
+        ))
+          doc.id: doc.data(),
+      };
+      final cloudItems = results[0].docs.map((doc) {
+        final data = {...doc.data(), ...?privateItems[doc.id]};
+        return ItemModel.fromJson(data);
+      }).toList();
+      final mergedItems = <String, ItemModel>{
+        for (final item in sampleItems) item.id: item,
+        for (final item in cloudItems) item.id: item,
+      }.values.toList();
+      final claimDocs = <String, QueryDocumentSnapshot<Map<String, dynamic>>>{
+        for (final doc in [...ownedClaims.docs, ...submittedClaims.docs])
+          doc.id: doc,
+      };
+      final cloudClaims = claimDocs.values
+          .map((doc) => ClaimModel.fromJson(doc.data(), mergedItems))
+          .toList();
+      final cloudReports = results[1].docs
+          .map((doc) => AbuseReportModel.fromJson(doc.data()))
+          .toList();
+      final cloudThankYouMessages = results[2].docs
+          .map((doc) => ThankYouModel.fromJson(doc.data()))
+          .toList();
 
-      final thankYouDocs = await FirebaseFirestore.instance
-          .collection('thankYouMessages')
-          .get();
-      if (thankYouDocs.docs.isNotEmpty) {
-        thankYouMessages
-          ..clear()
-          ..addAll(
-            thankYouDocs.docs.map((doc) {
-              return ThankYouModel.fromJson(doc.data());
-            }),
-          );
-      }
-
-      final chatDocs = await FirebaseFirestore.instance
-          .collectionGroup('messages')
-          .get();
-      if (chatDocs.docs.isNotEmpty) {
-        chatMessages
-          ..clear()
-          ..addAll(
-            chatDocs.docs.map((doc) {
-              return ChatMessageModel.fromJson(doc.data());
-            }),
-          );
-      }
+      sampleItems
+        ..clear()
+        ..addAll(mergedItems);
+      final mergedClaims = <String, ClaimModel>{
+        for (final claim in sampleClaims) claim.id: claim,
+        for (final claim in cloudClaims) claim.id: claim,
+      }.values;
+      sampleClaims
+        ..clear()
+        ..addAll(mergedClaims);
+      final mergedReports = <String, AbuseReportModel>{
+        for (final report in abuseReports) report.id: report,
+        for (final report in cloudReports) report.id: report,
+      }.values;
+      abuseReports
+        ..clear()
+        ..addAll(mergedReports);
+      final mergedThanks = <String, ThankYouModel>{
+        for (final message in thankYouMessages) message.id: message,
+        for (final message in cloudThankYouMessages) message.id: message,
+      }.values;
+      thankYouMessages
+        ..clear()
+        ..addAll(mergedThanks);
 
       await saveAll();
     } on FirebaseException catch (error) {
@@ -215,7 +227,9 @@ class StorageService {
     var changed = 0;
     final now = DateTime.now();
     for (final item in sampleItems) {
-      final parsedDate = _parseDisplayDate(item.date);
+      final parsedDate = item.createdAtMillis == null
+          ? _parseDisplayDate(item.date)
+          : DateTime.fromMillisecondsSinceEpoch(item.createdAtMillis!);
       if (parsedDate == null) continue;
 
       final age = now.difference(parsedDate).inDays;
@@ -244,6 +258,22 @@ class StorageService {
     await saveChatMessages();
   }
 
+  /// Removes user-specific records from a shared device while retaining the
+  /// public item catalogue. Cloud records are loaded again for the next user.
+  static Future<void> clearPrivateSessionData() async {
+    final prefs = await SharedPreferences.getInstance();
+    await Future.wait([
+      prefs.remove(_claimsKey),
+      prefs.remove(_abuseReportsKey),
+      prefs.remove(_thankYouMessagesKey),
+      prefs.remove(_chatMessagesKey),
+    ]);
+    sampleClaims.clear();
+    abuseReports.clear();
+    thankYouMessages.clear();
+    chatMessages.clear();
+  }
+
   static DateTime? _parseDisplayDate(String value) {
     final parts = value.split(' ');
     if (parts.length != 3) return null;
@@ -268,5 +298,30 @@ class StorageService {
     final year = int.tryParse(parts[2]);
     if (day == null || month == null || year == null) return null;
     return DateTime(year, month, day);
+  }
+
+  static List<dynamic>? _decodeList(String? value) {
+    if (value == null) return null;
+    try {
+      final decoded = jsonDecode(value);
+      return decoded is List<dynamic> ? decoded : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static List<T> _parseRecords<T>(
+    List<dynamic> records,
+    T Function(Map<String, dynamic>) parser,
+  ) {
+    final parsed = <T>[];
+    for (final record in records) {
+      try {
+        if (record is Map<String, dynamic>) parsed.add(parser(record));
+      } catch (_) {
+        // Skip only the damaged record so valid local data remains usable.
+      }
+    }
+    return parsed;
   }
 }

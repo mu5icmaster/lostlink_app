@@ -3,7 +3,6 @@ class UserModel {
   final String email;
   final String role;
   final String contactNumber;
-  final String password;
   final String? profileImageUrl;
   final String? profileImagePath;
 
@@ -12,7 +11,6 @@ class UserModel {
     required this.email,
     required this.role,
     required this.contactNumber,
-    required this.password,
     this.profileImageUrl,
     this.profileImagePath,
   });
@@ -23,7 +21,6 @@ class UserModel {
       email: json['email'] as String,
       role: json['role'] as String,
       contactNumber: json['contactNumber'] as String? ?? '',
-      password: json['password'] as String? ?? '',
       profileImageUrl: json['profileImageUrl'] as String?,
       profileImagePath: json['profileImagePath'] as String?,
     );
@@ -35,7 +32,6 @@ class UserModel {
       'email': email,
       'role': role,
       'contactNumber': contactNumber,
-      'password': password,
       'profileImageUrl': profileImageUrl,
       'profileImagePath': profileImagePath,
     };

@@ -65,5 +65,4 @@ class DefaultFirebaseOptions {
     storageBucket: 'lostlink-4ac08.firebasestorage.app',
     iosBundleId: 'com.example.lostLink',
   );
-
 }

@@ -3,16 +3,78 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../models/item_model.dart';
+import '../models/claim_model.dart';
+import '../data/sample_claims.dart';
+import '../services/auth_service.dart';
+import '../services/firebase_item_service.dart';
+import '../services/storage_service.dart';
 import 'claim_request_screen.dart';
 import 'item_chat_screen.dart';
 import 'possible_matches_screen.dart';
 import 'report_abuse_screen.dart';
 import 'thank_you_screen.dart';
+import 'manage_claims_screen.dart';
 
-class ItemDetailScreen extends StatelessWidget {
+class ItemDetailScreen extends StatefulWidget {
   final ItemModel item;
 
   const ItemDetailScreen({super.key, required this.item});
+
+  @override
+  State<ItemDetailScreen> createState() => _ItemDetailScreenState();
+}
+
+class _ItemDetailScreenState extends State<ItemDetailScreen> {
+  ItemModel get item => widget.item;
+
+  bool get isOwner {
+    final user = AuthService.currentUser;
+    final uid = FirebaseItemService.currentUid;
+    return user != null &&
+        ((uid != null && item.reporterUid == uid) ||
+            item.reporterEmail == user.email);
+  }
+
+  bool get isAdmin => AuthService.currentUser?.role == 'Admin';
+
+  ClaimModel? get activeClaim {
+    final user = AuthService.currentUser;
+    if (user == null) return null;
+    for (final claim in sampleClaims) {
+      if (claim.item.id == item.id &&
+          claim.claimantEmail == user.email &&
+          (claim.status == 'Pending' || claim.status == 'Approved')) {
+        return claim;
+      }
+    }
+    return null;
+  }
+
+  bool get hasActiveClaim => activeClaim != null;
+
+  bool get hasApprovedClaim {
+    final user = AuthService.currentUser;
+    if (user == null) return false;
+    return sampleClaims.any(
+      (claim) =>
+          claim.item.id == item.id &&
+          claim.claimantEmail == user.email &&
+          (claim.status == 'Approved' || claim.status == 'Collected'),
+    );
+  }
+
+  bool get canSeePrivateDetails => isOwner || isAdmin || hasApprovedClaim;
+  bool get canChat => activeClaim != null;
+
+  Future<void> updateStatus(String status) async {
+    setState(() => item.status = status);
+    await StorageService.saveItems();
+    await FirebaseItemService.uploadItem(item: item);
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Report updated to $status.')));
+  }
 
   Color getThemeColor() {
     if (item.type == 'lost') {
@@ -161,7 +223,9 @@ class ItemDetailScreen extends StatelessWidget {
                     label: 'Description',
                     value: item.description,
                   ),
-                  if (item.keptAt != null && item.keptAt!.isNotEmpty)
+                  if (canSeePrivateDetails &&
+                      item.keptAt != null &&
+                      item.keptAt!.isNotEmpty)
                     DetailRow(
                       icon: Icons.lock_rounded,
                       label: 'Kept At',
@@ -174,13 +238,21 @@ class ItemDetailScreen extends StatelessWidget {
                         ? 'Not recorded'
                         : '${item.reporterName} (${item.reporterRole})',
                   ),
-                  DetailRow(
-                    icon: Icons.phone_rounded,
-                    label: 'Contact',
-                    value: item.contactInfo.isEmpty
-                        ? 'Not recorded'
-                        : item.contactInfo,
-                  ),
+                  if (canSeePrivateDetails)
+                    DetailRow(
+                      icon: Icons.phone_rounded,
+                      label: 'Contact',
+                      value: item.contactInfo.isEmpty
+                          ? 'Not recorded'
+                          : item.contactInfo,
+                    )
+                  else
+                    const DetailRow(
+                      icon: Icons.privacy_tip_outlined,
+                      label: 'Private details',
+                      value:
+                          'Contact and collection details appear after claim approval.',
+                    ),
                 ],
               ),
             ),
@@ -212,7 +284,10 @@ class ItemDetailScreen extends StatelessWidget {
                 ),
               ),
 
-            if (item.type == 'found')
+            if (item.type == 'found' &&
+                item.status == 'Available' &&
+                !isOwner &&
+                !hasActiveClaim)
               SizedBox(
                 width: double.infinity,
                 height: 56,
@@ -236,24 +311,80 @@ class ItemDetailScreen extends StatelessWidget {
                   ),
                 ),
               ),
+            if (item.type == 'found' && isOwner) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.tonalIcon(
+                  onPressed: () async {
+                    await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ManageClaimsScreen(itemId: item.id),
+                      ),
+                    );
+                    if (mounted) setState(() {});
+                  },
+                  icon: const Icon(Icons.fact_check_outlined),
+                  label: const Text('Review claims'),
+                ),
+              ),
+            ],
+            if (isOwner &&
+                (item.status == 'Missing' || item.status == 'Available')) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () => updateStatus(
+                    item.type == 'lost' ? 'Returned' : 'Withdrawn',
+                  ),
+                  icon: const Icon(Icons.task_alt_rounded),
+                  label: Text(
+                    item.type == 'lost'
+                        ? 'Mark as resolved'
+                        : 'Withdraw found report',
+                  ),
+                ),
+              ),
+            ],
+            if (isOwner &&
+                (item.status == 'Returned' || item.status == 'Withdrawn')) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () => updateStatus(
+                    item.type == 'lost' ? 'Missing' : 'Available',
+                  ),
+                  icon: const Icon(Icons.restart_alt_rounded),
+                  label: const Text('Reopen report'),
+                ),
+              ),
+            ],
             const SizedBox(height: 12),
             Row(
               children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => ItemChatScreen(item: item),
-                        ),
-                      );
-                    },
-                    icon: const Icon(Icons.chat_bubble_outline_rounded),
-                    label: const Text('Chat'),
+                if (canChat) ...[
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => ItemChatScreen(
+                              item: item,
+                              conversationId: activeClaim!.id,
+                            ),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.chat_bubble_outline_rounded),
+                      label: const Text('Chat'),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 10),
+                  const SizedBox(width: 10),
+                ],
                 Expanded(
                   child: OutlinedButton.icon(
                     onPressed: () {

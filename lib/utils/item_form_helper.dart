@@ -4,7 +4,10 @@ class ItemFormHelper {
   }
 
   static String formattedToday() {
-    final now = DateTime.now();
+    return formatDate(DateTime.now());
+  }
+
+  static String formatDate(DateTime date) {
     const months = [
       'Jan',
       'Feb',
@@ -20,7 +23,7 @@ class ItemFormHelper {
       'Dec',
     ];
 
-    return '${now.day} ${months[now.month - 1]} ${now.year}';
+    return '${date.day} ${months[date.month - 1]} ${date.year}';
   }
 
   static String emojiForCategory(String category) {

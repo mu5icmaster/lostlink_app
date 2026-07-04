@@ -1,14 +1,26 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:firebase_app_check/firebase_app_check.dart';
 
 import 'services/app_settings_service.dart';
 import 'services/firebase_item_service.dart';
 import 'services/storage_service.dart';
-import 'screens/login_screen.dart';
+import 'screens/auth_gate.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppSettingsService.load();
   await FirebaseItemService.initialize();
+  if (FirebaseItemService.isAvailable) {
+    await FirebaseAppCheck.instance.activate(
+      providerAndroid: kDebugMode
+          ? const AndroidDebugProvider()
+          : const AndroidPlayIntegrityProvider(),
+      providerApple: kDebugMode
+          ? const AppleDebugProvider()
+          : const AppleAppAttestWithDeviceCheckFallbackProvider(),
+    );
+  }
   await StorageService.loadData();
   runApp(const LostLinkApp());
 }
@@ -69,7 +81,7 @@ class LostLinkApp extends StatelessWidget {
               ),
             ),
           ),
-          home: const LoginScreen(),
+          home: const AuthGate(),
         );
       },
     );

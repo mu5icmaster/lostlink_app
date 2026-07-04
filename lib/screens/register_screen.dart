@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../models/user_model.dart';
 import '../services/auth_service.dart';
 import '../services/firebase_item_service.dart';
+import '../services/storage_service.dart';
+import '../services/notification_service.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -66,7 +68,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
       email: email,
       role: AuthService.roleForEmail(email),
       contactNumber: contact,
-      password: password,
     );
 
     setState(() {
@@ -75,7 +76,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
     var cloudSaved = false;
     try {
-      cloudSaved = await AuthService.registerUser(user);
+      cloudSaved = await AuthService.registerUser(user, password: password);
+      AuthService.currentUser = user;
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -86,9 +88,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
     }
 
     if (!mounted) return;
+    await FirebaseItemService.sendEmailVerification();
+    await StorageService.syncFromCloud();
+    await NotificationService.initializeForCurrentUser();
+    if (!mounted) return;
     final message = cloudSaved
-        ? 'Account created and saved to cloud.'
-        : 'Account created locally. Cloud sync failed: ${FirebaseItemService.lastFirestoreError ?? 'check Firebase setup'}';
+        ? FirebaseItemService.lastFirestoreWriteSucceeded
+              ? 'Account created with Firebase Authentication.'
+              : 'Account created. Profile cloud sync will be retried later.'
+        : 'Account creation failed: ${FirebaseItemService.lastAuthError ?? FirebaseItemService.lastFirestoreError ?? 'check Firebase setup'}';
     showMessage(message);
     Navigator.pop(context, user);
   }

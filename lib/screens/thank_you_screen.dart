@@ -34,6 +34,8 @@ class _ThankYouScreenState extends State<ThankYouScreen> {
       itemId: widget.item.id,
       itemName: widget.item.name,
       fromName: fromController.text.trim(),
+      fromUid: FirebaseItemService.currentUid ?? '',
+      toUid: widget.item.reporterUid,
       toName: widget.item.reporterName.isEmpty
           ? 'Finder'
           : widget.item.reporterName,

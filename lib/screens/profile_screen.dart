@@ -66,7 +66,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         .where((item) => item.reporterEmail == currentUser.email)
         .length;
     final myClaims = sampleClaims
-        .where((claim) => claim.contactInfo == currentUser.contactNumber)
+        .where((claim) => claim.claimantEmail == currentUser.email)
         .length;
 
     return Scaffold(
@@ -81,7 +81,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
         stream: FirebaseFirestore.instance
             .collection('users')
-            .doc(currentUser.email)
+            .doc(FirebaseItemService.currentUid ?? currentUser.email)
             .snapshots(),
         builder: (context, snapshot) {
           final data = snapshot.data?.data();

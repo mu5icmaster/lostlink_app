@@ -11,20 +11,20 @@ class MatchHelper {
   static int calculateMatchScore(ItemModel lostItem, ItemModel foundItem) {
     int score = 0;
 
-    final lostName = lostItem.name.toLowerCase();
-    final foundName = foundItem.name.toLowerCase();
+    final lostName = _normalize(lostItem.name);
+    final foundName = _normalize(foundItem.name);
 
-    final lostCategory = lostItem.category.toLowerCase();
-    final foundCategory = foundItem.category.toLowerCase();
+    final lostCategory = _canonicalCategory(lostItem.category);
+    final foundCategory = _canonicalCategory(foundItem.category);
 
-    final lostColor = lostItem.color.toLowerCase();
-    final foundColor = foundItem.color.toLowerCase();
+    final lostColor = _canonicalColor(lostItem.color);
+    final foundColor = _canonicalColor(foundItem.color);
 
-    final lostLocation = lostItem.location.toLowerCase();
-    final foundLocation = foundItem.location.toLowerCase();
+    final lostLocation = _normalize(lostItem.location);
+    final foundLocation = _normalize(foundItem.location);
 
-    final lostDescription = lostItem.description.toLowerCase();
-    final foundDescription = foundItem.description.toLowerCase();
+    final lostDescription = _normalize(lostItem.description);
+    final foundDescription = _normalize(foundItem.description);
 
     // Same category
     if (lostCategory == foundCategory) {
@@ -42,6 +42,7 @@ class MatchHelper {
           break;
         }
       }
+      if (_similarity(lostName, foundName) >= 0.72) score += 10;
     }
 
     // Same colour
@@ -81,6 +82,17 @@ class MatchHelper {
       score += 5;
     }
 
+    final lostDate = _parseDate(lostItem.date);
+    final foundDate = _parseDate(foundItem.date);
+    if (lostDate != null && foundDate != null) {
+      final dayGap = lostDate.difference(foundDate).inDays.abs();
+      if (dayGap > 30) {
+        score -= 20;
+      } else if (dayGap > 14) {
+        score -= 10;
+      }
+    }
+
     if (score > 100) {
       score = 100;
     }
@@ -88,11 +100,89 @@ class MatchHelper {
     return score;
   }
 
+  static String _normalize(String value) => value
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z0-9 ]'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+
+  static String _canonicalColor(String value) {
+    final color = _normalize(value);
+    const aliases = {
+      'grey': 'gray',
+      'navy blue': 'blue',
+      'light blue': 'blue',
+      'dark blue': 'blue',
+      'maroon': 'red',
+    };
+    return aliases[color] ?? color;
+  }
+
+  static String _canonicalCategory(String value) {
+    final category = _normalize(value);
+    const aliases = {
+      'electronic': 'electronics',
+      'phone': 'electronics',
+      'book': 'books',
+      'bag': 'bags',
+      'key': 'keys',
+    };
+    return aliases[category] ?? category;
+  }
+
+  static double _similarity(String a, String b) {
+    if (a.isEmpty || b.isEmpty) return 0;
+    final previous = List<int>.generate(b.length + 1, (index) => index);
+    for (var i = 1; i <= a.length; i++) {
+      var diagonal = previous[0];
+      previous[0] = i;
+      for (var j = 1; j <= b.length; j++) {
+        final above = previous[j];
+        previous[j] = a.codeUnitAt(i - 1) == b.codeUnitAt(j - 1)
+            ? diagonal
+            : 1 +
+                  [
+                    diagonal,
+                    above,
+                    previous[j - 1],
+                  ].reduce((left, right) => left < right ? left : right);
+        diagonal = above;
+      }
+    }
+    return 1 - (previous.last / (a.length > b.length ? a.length : b.length));
+  }
+
+  static DateTime? _parseDate(String value) {
+    const months = {
+      'Jan': 1,
+      'Feb': 2,
+      'Mar': 3,
+      'Apr': 4,
+      'May': 5,
+      'Jun': 6,
+      'Jul': 7,
+      'Aug': 8,
+      'Sep': 9,
+      'Oct': 10,
+      'Nov': 11,
+      'Dec': 12,
+    };
+    final parts = value.split(' ');
+    if (parts.length != 3) return null;
+    final day = int.tryParse(parts[0]);
+    final month = months[parts[1]];
+    final year = int.tryParse(parts[2]);
+    if (day == null || month == null || year == null) return null;
+    return DateTime(year, month, day);
+  }
+
   static List<MatchResult> findPossibleMatches({
     required ItemModel lostItem,
     required List<ItemModel> allItems,
   }) {
-    final foundItems = allItems.where((item) => item.type == 'found').toList();
+    final foundItems = allItems
+        .where((item) => item.type == 'found' && item.status == 'Available')
+        .toList();
 
     final results = foundItems
         .map((foundItem) {

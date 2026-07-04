@@ -2,31 +2,89 @@ import 'package:flutter/material.dart';
 
 import '../data/sample_claims.dart';
 import '../models/claim_model.dart';
+import '../models/notification_model.dart';
 import '../services/firebase_item_service.dart';
 import '../services/storage_service.dart';
 import 'qr_verification_screen.dart';
+import 'item_chat_screen.dart';
 
 class ManageClaimsScreen extends StatefulWidget {
-  const ManageClaimsScreen({super.key});
+  final String? itemId;
+
+  const ManageClaimsScreen({super.key, this.itemId});
 
   @override
   State<ManageClaimsScreen> createState() => _ManageClaimsScreenState();
 }
 
 class _ManageClaimsScreenState extends State<ManageClaimsScreen> {
+  List<ClaimModel> get visibleClaims => sampleClaims
+      .where((claim) => widget.itemId == null || claim.item.id == widget.itemId)
+      .toList();
+
   Future<void> updateClaimStatus(ClaimModel claim, String status) async {
+    final affectedClaims = <ClaimModel>{claim};
     setState(() {
       claim.status = status;
       if (status == 'Approved') {
         claim.item.status = 'Claimed';
-      } else if (status == 'Rejected' && claim.item.type == 'found') {
-        claim.item.status = 'Available';
+        for (final competingClaim in sampleClaims) {
+          if (competingClaim.id != claim.id &&
+              competingClaim.item.id == claim.item.id &&
+              competingClaim.status == 'Pending') {
+            competingClaim.status = 'Rejected';
+            affectedClaims.add(competingClaim);
+          }
+        }
+      } else if (status == 'Rejected') {
+        final claimsForItem = sampleClaims.where(
+          (other) => other.item.id == claim.item.id,
+        );
+        if (claimsForItem.any((other) => other.status == 'Approved')) {
+          claim.item.status = 'Claimed';
+        } else {
+          claim.item.status = claim.item.type == 'found'
+              ? 'Available'
+              : 'Missing';
+        }
       }
     });
 
     await StorageService.saveAll();
-    await FirebaseItemService.uploadClaim(claim);
+    await Future.wait(affectedClaims.map(FirebaseItemService.uploadClaim));
     await FirebaseItemService.uploadItem(item: claim.item);
+    if (status == 'Approved') {
+      await FirebaseItemService.grantItemPrivateAccess(
+        itemId: claim.item.id,
+        claimantUid: claim.claimantUid,
+      );
+    }
+    await FirebaseItemService.uploadNotification(
+      NotificationModel(
+        id: 'claim-status-${claim.id}-$status',
+        recipientUid: claim.claimantUid,
+        title: 'Claim $status',
+        body: 'Your claim for ${claim.item.name} was ${status.toLowerCase()}.',
+        type: 'claim_status',
+        itemId: claim.item.id,
+        createdAtMillis: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    for (final competingClaim in affectedClaims.where(
+      (other) => other.id != claim.id && other.status == 'Rejected',
+    )) {
+      await FirebaseItemService.uploadNotification(
+        NotificationModel(
+          id: 'claim-status-${competingClaim.id}-Rejected',
+          recipientUid: competingClaim.claimantUid,
+          title: 'Claim Rejected',
+          body: 'Another claim for ${competingClaim.item.name} was verified.',
+          type: 'claim_status',
+          itemId: competingClaim.item.id,
+          createdAtMillis: DateTime.now().millisecondsSinceEpoch,
+        ),
+      );
+    }
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -53,13 +111,13 @@ class _ManageClaimsScreenState extends State<ManageClaimsScreen> {
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.surface,
       appBar: AppBar(
-        title: const Text('Manage Claims'),
+        title: Text(widget.itemId == null ? 'Manage Claims' : 'Review Claims'),
         centerTitle: true,
         backgroundColor: Theme.of(context).colorScheme.surface,
         foregroundColor: Theme.of(context).colorScheme.onSurface,
         elevation: 0,
       ),
-      body: sampleClaims.isEmpty
+      body: visibleClaims.isEmpty
           ? const Center(
               child: Text(
                 'No claim requests yet.\nSubmit a claim from Found Items first.',
@@ -73,9 +131,9 @@ class _ManageClaimsScreenState extends State<ManageClaimsScreen> {
             )
           : ListView.builder(
               padding: const EdgeInsets.all(20),
-              itemCount: sampleClaims.length,
+              itemCount: visibleClaims.length,
               itemBuilder: (context, index) {
-                final claim = sampleClaims[index];
+                final claim = visibleClaims[index];
                 final statusColor = getStatusColor(claim.status);
 
                 return Container(
@@ -213,13 +271,35 @@ class _ManageClaimsScreenState extends State<ManageClaimsScreen> {
                               Navigator.push(
                                 context,
                                 MaterialPageRoute(
-                                  builder: (_) =>
-                                      QrVerificationScreen(claim: claim),
+                                  builder: (_) => QrVerificationScreen(
+                                    claim: claim,
+                                    canCompleteCollection: true,
+                                  ),
                                 ),
                               );
                             },
                             icon: const Icon(Icons.qr_code_2_rounded),
                             label: const Text('Show Collection QR'),
+                          ),
+                        ),
+                      ],
+                      if (claim.status == 'Pending' ||
+                          claim.status == 'Approved') ...[
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            onPressed: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => ItemChatScreen(
+                                  item: claim.item,
+                                  conversationId: claim.id,
+                                ),
+                              ),
+                            ),
+                            icon: const Icon(Icons.chat_outlined),
+                            label: const Text('Chat with claimant'),
                           ),
                         ),
                       ],

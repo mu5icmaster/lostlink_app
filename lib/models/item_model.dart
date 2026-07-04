@@ -14,9 +14,11 @@ class ItemModel {
   final String? localImagePath;
   final String reporterName;
   final String reporterEmail;
+  final String reporterUid;
   final String reporterRole;
   final String contactInfo;
   final String? keptAt;
+  final int? createdAtMillis;
 
   ItemModel({
     required this.id,
@@ -34,9 +36,11 @@ class ItemModel {
     this.localImagePath,
     this.reporterName = '',
     this.reporterEmail = '',
+    this.reporterUid = '',
     this.reporterRole = '',
     this.contactInfo = '',
     this.keptAt,
+    this.createdAtMillis,
   });
 
   factory ItemModel.fromJson(Map<String, dynamic> json) {
@@ -56,9 +60,12 @@ class ItemModel {
       localImagePath: json['localImagePath'] as String?,
       reporterName: json['reporterName'] as String? ?? '',
       reporterEmail: json['reporterEmail'] as String? ?? '',
+      reporterUid:
+          json['reporterUid'] as String? ?? json['createdBy'] as String? ?? '',
       reporterRole: json['reporterRole'] as String? ?? '',
       contactInfo: json['contactInfo'] as String? ?? '',
       keptAt: json['keptAt'] as String?,
+      createdAtMillis: (json['createdAtMillis'] as num?)?.toInt(),
     );
   }
 
@@ -83,9 +90,11 @@ class ItemModel {
       localImagePath: localImagePath ?? this.localImagePath,
       reporterName: reporterName,
       reporterEmail: reporterEmail,
+      reporterUid: reporterUid,
       reporterRole: reporterRole,
       contactInfo: contactInfo,
       keptAt: keptAt,
+      createdAtMillis: createdAtMillis,
     );
   }
 
@@ -106,9 +115,11 @@ class ItemModel {
       'localImagePath': localImagePath,
       'reporterName': reporterName,
       'reporterEmail': reporterEmail,
+      'reporterUid': reporterUid,
       'reporterRole': reporterRole,
       'contactInfo': contactInfo,
       'keptAt': keptAt,
+      'createdAtMillis': createdAtMillis,
     };
   }
 }
