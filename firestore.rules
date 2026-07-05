@@ -2,115 +2,167 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
+    function email() { return request.auth.token.email; }
+    function campusUser() {
+      return signedIn() && email() is string &&
+        (email().matches('.*@student\\.campus\\.edu\\.my$') ||
+         email().matches('.*@staff\\.campus\\.edu\\.my$') ||
+         email().matches('.*@lecturer\\.campus\\.edu\\.my$') ||
+         email() == 'admin@campus.edu.my');
+    }
     function isAdmin() {
-      return signedIn() &&
+      return campusUser() &&
         (request.auth.token.admin == true ||
-         request.auth.token.email == 'admin@campus.edu.my');
+         email() == 'admin@campus.edu.my');
+    }
+    function validRole(role) {
+      return (email() == 'admin@campus.edu.my' && role == 'Admin') ||
+        (email().matches('.*@lecturer\\.campus\\.edu\\.my$') && role == 'Lecturer') ||
+        (email().matches('.*@staff\\.campus\\.edu\\.my$') && role == 'Staff') ||
+        (email().matches('.*@student\\.campus\\.edu\\.my$') && role == 'Student');
     }
 
     match /users/{uid} {
-      allow create, read, update, delete: if signedIn() &&
-        (request.auth.uid == uid || isAdmin());
+      allow create: if campusUser() && request.auth.uid == uid &&
+        request.resource.data.email == email() &&
+        validRole(request.resource.data.role);
+      allow read: if campusUser() && (request.auth.uid == uid || isAdmin());
+      allow update: if campusUser() &&
+        (request.auth.uid == uid || isAdmin()) &&
+        request.resource.data.uid == resource.data.uid &&
+        request.resource.data.email == resource.data.email &&
+        request.resource.data.role == resource.data.role;
+      allow delete: if campusUser() && (request.auth.uid == uid || isAdmin());
     }
 
     match /items/{itemId} {
-      allow read: if signedIn();
-      allow create: if signedIn() &&
-        request.resource.data.reporterUid == request.auth.uid;
-      allow update: if signedIn() &&
+      allow read: if campusUser();
+      allow create: if campusUser() &&
+        request.resource.data.reporterUid == request.auth.uid &&
+        request.resource.data.reporterEmail == email() &&
+        request.resource.data.status in ['Missing', 'Available'] &&
+        request.resource.data.type in ['lost', 'found'];
+      allow update: if campusUser() &&
         (resource.data.reporterUid == request.auth.uid || isAdmin()) &&
-        request.resource.data.reporterUid == resource.data.reporterUid;
-      allow delete: if signedIn() &&
+        request.resource.data.reporterUid == resource.data.reporterUid &&
+        request.resource.data.reporterEmail == resource.data.reporterEmail &&
+        request.resource.data.type == resource.data.type;
+      allow delete: if campusUser() &&
         (resource.data.reporterUid == request.auth.uid || isAdmin());
     }
 
     match /itemPrivate/{itemId} {
-      allow create: if signedIn() &&
+      allow create: if campusUser() &&
         (request.resource.data.ownerUid == request.auth.uid || isAdmin());
-      allow read: if signedIn() &&
+      allow read: if campusUser() &&
         (resource.data.ownerUid == request.auth.uid ||
          request.auth.uid in resource.data.get('approvedClaimantUids', []) ||
          isAdmin());
-      allow update: if signedIn() &&
+      allow update: if campusUser() &&
         (resource.data.ownerUid == request.auth.uid || isAdmin()) &&
         request.resource.data.ownerUid == resource.data.ownerUid;
-      allow delete: if signedIn() &&
+      allow delete: if campusUser() &&
         (resource.data.ownerUid == request.auth.uid || isAdmin());
     }
 
     match /claims/{claimId} {
-      allow create: if signedIn() &&
+      allow create: if campusUser() &&
         request.resource.data.claimantUid == request.auth.uid &&
+        request.resource.data.claimantEmail == email() &&
+        request.resource.data.status == 'Pending' &&
+        request.resource.data.itemOwnerUid != request.auth.uid &&
         request.resource.data.itemOwnerUid ==
           get(/databases/$(database)/documents/items/$(request.resource.data.itemId)).data.reporterUid;
-      allow read: if signedIn() &&
+      allow read: if campusUser() &&
         (resource.data.claimantUid == request.auth.uid ||
          resource.data.itemOwnerUid == request.auth.uid || isAdmin());
-      allow update: if signedIn() &&
-        (resource.data.itemOwnerUid == request.auth.uid || isAdmin() ||
+      allow update: if campusUser() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']) &&
+        ((resource.data.itemOwnerUid == request.auth.uid &&
+          ((resource.data.status == 'Pending' &&
+            request.resource.data.status in ['Approved', 'Rejected']) ||
+           (resource.data.status == 'Approved' &&
+            request.resource.data.status == 'Collected'))) ||
          (resource.data.claimantUid == request.auth.uid &&
           resource.data.status == 'Pending' &&
-          request.resource.data.status == 'Withdrawn')) &&
-        request.resource.data.itemOwnerUid == resource.data.itemOwnerUid &&
-        request.resource.data.claimantUid == resource.data.claimantUid &&
-        request.resource.data.itemId == resource.data.itemId &&
-        request.resource.data.claimantEmail == resource.data.claimantEmail &&
-        request.resource.data.claimantName == resource.data.claimantName &&
-        request.resource.data.studentId == resource.data.studentId &&
-        request.resource.data.contactInfo == resource.data.contactInfo &&
-        request.resource.data.proofDescription == resource.data.proofDescription &&
-        request.resource.data.linkedLostItemId == resource.data.linkedLostItemId;
-      allow delete: if signedIn() &&
-        (resource.data.itemOwnerUid == request.auth.uid || isAdmin());
+          request.resource.data.status == 'Withdrawn') || isAdmin());
+      allow delete: if campusUser() &&
+        (resource.data.claimantUid == request.auth.uid ||
+         resource.data.itemOwnerUid == request.auth.uid || isAdmin());
     }
 
-    match /itemChats/{itemId} {
-      allow read: if signedIn() &&
-        request.auth.uid in resource.data.participantUids;
-      allow create: if signedIn() &&
-        request.auth.uid in request.resource.data.participantUids &&
-        request.resource.data.claimId == itemId &&
-        (get(/databases/$(database)/documents/claims/$(itemId)).data.claimantUid == request.auth.uid ||
-         get(/databases/$(database)/documents/claims/$(itemId)).data.itemOwnerUid == request.auth.uid ||
-         isAdmin());
+    match /itemChats/{claimId} {
+      function claim() {
+        return get(/databases/$(database)/documents/claims/$(claimId)).data;
+      }
+      function participant() {
+        return request.auth.uid == claim().claimantUid ||
+          request.auth.uid == claim().itemOwnerUid;
+      }
+      allow read: if campusUser() && participant();
+      allow create: if campusUser() && participant() &&
+        request.resource.data.claimId == claimId &&
+        request.resource.data.itemId == claim().itemId &&
+        request.resource.data.participantUids.size() == 2 &&
+        request.resource.data.participantUids.hasAll([
+          claim().claimantUid, claim().itemOwnerUid
+        ]);
       allow update: if false;
-      allow delete: if isAdmin();
+      allow delete: if campusUser() && (participant() || isAdmin());
 
       match /messages/{messageId} {
-        allow read: if signedIn() && request.auth.uid in
-          get(/databases/$(database)/documents/itemChats/$(itemId)).data.participantUids;
-        allow create: if signedIn() &&
+        allow read: if campusUser() && request.auth.uid in
+          get(/databases/$(database)/documents/itemChats/$(claimId)).data.participantUids;
+        allow create: if campusUser() &&
           request.resource.data.senderUid == request.auth.uid &&
-          request.auth.uid in get(/databases/$(database)/documents/itemChats/$(itemId)).data.participantUids;
-        allow update, delete: if false;
+          request.auth.uid in get(/databases/$(database)/documents/itemChats/$(claimId)).data.participantUids;
+        allow update: if false;
+        allow delete: if campusUser() &&
+          request.auth.uid in get(/databases/$(database)/documents/itemChats/$(claimId)).data.participantUids;
       }
     }
 
     match /notifications/{notificationId} {
-      allow read, delete: if signedIn() &&
+      allow read, delete: if campusUser() &&
         (resource.data.recipientUid == request.auth.uid || isAdmin());
-      allow update: if signedIn() &&
-        (resource.data.recipientUid == request.auth.uid || isAdmin()) &&
-        request.resource.data.recipientUid == resource.data.recipientUid;
-      allow create: if signedIn() &&
-        request.resource.data.createdByUid == request.auth.uid;
+      allow update: if campusUser() &&
+        resource.data.recipientUid == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead', 'readAt']);
+      allow create: if campusUser() &&
+        request.resource.data.createdByUid == request.auth.uid &&
+        request.resource.data.recipientUid is string &&
+        request.resource.data.recipientUid != request.auth.uid &&
+        (isAdmin() ||
+         (request.resource.data.type == 'claim_request' &&
+          get(/databases/$(database)/documents/items/$(request.resource.data.itemId)).data.reporterUid == request.resource.data.recipientUid) ||
+         (request.resource.data.type == 'claim_status' &&
+          get(/databases/$(database)/documents/items/$(request.resource.data.itemId)).data.reporterUid == request.auth.uid));
     }
 
     match /abuseReports/{reportId} {
-      allow create: if signedIn() &&
-        request.resource.data.reporterUid == request.auth.uid;
-      allow read: if signedIn() &&
+      allow create: if campusUser() &&
+        request.resource.data.reporterUid == request.auth.uid &&
+        request.resource.data.reporterEmail == email() &&
+        request.resource.data.status == 'Open';
+      allow read: if campusUser() &&
         (resource.data.reporterUid == request.auth.uid || isAdmin());
-      allow update, delete: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if campusUser() &&
+        (resource.data.reporterUid == request.auth.uid || isAdmin());
     }
 
     match /thankYouMessages/{messageId} {
-      allow create: if signedIn() &&
-        request.resource.data.fromUid == request.auth.uid;
-      allow read: if signedIn() &&
+      allow create: if campusUser() &&
+        request.resource.data.fromUid == request.auth.uid &&
+        request.resource.data.toUid ==
+          get(/databases/$(database)/documents/items/$(request.resource.data.itemId)).data.reporterUid;
+      allow read: if campusUser() &&
         (resource.data.fromUid == request.auth.uid ||
          resource.data.toUid == request.auth.uid || isAdmin());
-      allow update, delete: if false;
+      allow delete: if campusUser() &&
+        (resource.data.fromUid == request.auth.uid ||
+         resource.data.toUid == request.auth.uid || isAdmin());
+      allow update: if false;
     }
   }
 }

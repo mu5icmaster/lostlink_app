@@ -148,7 +148,7 @@ class _ClaimRequestScreenState extends State<ClaimRequestScreen> {
         recipientUid: widget.item.reporterUid,
         title: 'New claim request',
         body: '${currentUser.name} submitted a claim for ${widget.item.name}.',
-        type: 'claim',
+        type: 'claim_request',
         itemId: widget.item.id,
         createdAtMillis: DateTime.now().millisecondsSinceEpoch,
       ),

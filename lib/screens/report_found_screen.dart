@@ -190,20 +190,22 @@ class _ReportFoundScreenState extends State<ReportFoundScreen> {
       createdAtMillis: DateTime.now().millisecondsSinceEpoch,
     );
 
-    var itemToSave = newItem;
-    var remoteMessage = 'Found item reported successfully.';
-
-    try {
-      itemToSave = await FirebaseItemService.uploadItem(
-        item: newItem,
-        includeCreatedAt: true,
+    final itemToSave = await FirebaseItemService.uploadItem(
+      item: newItem,
+      includeCreatedAt: true,
+    );
+    if (!FirebaseItemService.lastFirestoreWriteSucceeded) {
+      if (!mounted) return;
+      setState(() => isSubmitting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            FirebaseItemService.lastFirestoreError ??
+                'Found item could not be published.',
+          ),
+        ),
       );
-      if (!FirebaseItemService.lastFirestoreWriteSucceeded) {
-        remoteMessage =
-            'Found item saved locally. Firestore sync did not complete.';
-      }
-    } catch (_) {
-      remoteMessage = 'Found item saved locally. Firestore save failed.';
+      return;
     }
 
     sampleItems.add(itemToSave);
@@ -215,7 +217,7 @@ class _ReportFoundScreenState extends State<ReportFoundScreen> {
       SnackBar(
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        content: Text(remoteMessage),
+        content: const Text('Found item reported successfully.'),
       ),
     );
 

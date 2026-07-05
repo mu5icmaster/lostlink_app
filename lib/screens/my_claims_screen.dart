@@ -46,9 +46,24 @@ class _MyClaimsScreenState extends State<MyClaimsScreen> {
       ),
     );
     if (confirmed != true) return;
+    final previousStatus = claim.status;
     setState(() => claim.status = 'Withdrawn');
+    final uploaded = await FirebaseItemService.uploadClaim(claim);
+    if (!uploaded) {
+      if (mounted) setState(() => claim.status = previousStatus);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              FirebaseItemService.lastFirestoreError ??
+                  'Claim could not be withdrawn.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
     await StorageService.saveClaims();
-    await FirebaseItemService.uploadClaim(claim);
   }
 
   @override

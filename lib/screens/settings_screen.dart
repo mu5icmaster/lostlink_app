@@ -85,6 +85,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               : error.message ?? 'Account deletion failed.',
         );
       }
+    } catch (error) {
+      if (mounted) message(error.toString().replaceFirst('Bad state: ', ''));
     } finally {
       if (mounted) setState(() => accountActionRunning = false);
     }

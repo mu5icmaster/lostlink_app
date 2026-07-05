@@ -24,6 +24,10 @@ class _ManageClaimsScreenState extends State<ManageClaimsScreen> {
 
   Future<void> updateClaimStatus(ClaimModel claim, String status) async {
     final affectedClaims = <ClaimModel>{claim};
+    final previousStatuses = <ClaimModel, String>{
+      for (final existing in sampleClaims) existing: existing.status,
+    };
+    final previousItemStatus = claim.item.status;
     setState(() {
       claim.status = status;
       if (status == 'Approved') {
@@ -50,15 +54,30 @@ class _ManageClaimsScreenState extends State<ManageClaimsScreen> {
       }
     });
 
-    await StorageService.saveAll();
-    await Future.wait(affectedClaims.map(FirebaseItemService.uploadClaim));
-    await FirebaseItemService.uploadItem(item: claim.item);
-    if (status == 'Approved') {
-      await FirebaseItemService.grantItemPrivateAccess(
-        itemId: claim.item.id,
-        claimantUid: claim.claimantUid,
-      );
+    final updated = await FirebaseItemService.applyClaimDecision(
+      claims: affectedClaims,
+      item: claim.item,
+      approvedClaimantUid: status == 'Approved' ? claim.claimantUid : null,
+    );
+    if (!updated) {
+      for (final entry in previousStatuses.entries) {
+        entry.key.status = entry.value;
+      }
+      claim.item.status = previousItemStatus;
+      if (mounted) setState(() {});
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              FirebaseItemService.lastFirestoreError ??
+                  'Claim status could not be updated.',
+            ),
+          ),
+        );
+      }
+      return;
     }
+    await StorageService.saveAll();
     await FirebaseItemService.uploadNotification(
       NotificationModel(
         id: 'claim-status-${claim.id}-$status',

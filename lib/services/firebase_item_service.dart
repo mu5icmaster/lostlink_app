@@ -110,24 +110,36 @@ class FirebaseItemService {
 
     lastFirestoreWriteSucceeded = await _safeFirestoreWrite(() async {
       final firestore = FirebaseFirestore.instance;
-      await firestore.collection('claims').doc(claim.id).set({
+      final claimRef = firestore.collection('claims').doc(claim.id);
+      final existingClaim = await claimRef.get();
+      final claimData = {
         ...claim.toJson(),
         'claimantUid': claim.claimantUid.isEmpty
             ? FirebaseAuth.instance.currentUser?.uid ?? ''
             : claim.claimantUid,
         'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
+      };
+      if (existingClaim.exists) {
+        await claimRef.set(claimData, SetOptions(merge: true));
+        return;
+      }
+
       final participants = [
-        claim.claimantUid,
+        claim.claimantUid.isEmpty
+            ? FirebaseAuth.instance.currentUser?.uid ?? ''
+            : claim.claimantUid,
         claim.itemOwnerUid,
       ].where((uid) => uid.isNotEmpty).toSet().toList();
       final chat = firestore.collection('itemChats').doc(claim.id);
-      await chat.set({
+      final batch = firestore.batch();
+      batch.set(claimRef, claimData);
+      batch.set(chat, {
         'itemId': claim.item.id,
         'claimId': claim.id,
         'participantUids': participants,
         'updatedAt': FieldValue.serverTimestamp(),
       });
+      await batch.commit();
     });
     return lastFirestoreWriteSucceeded;
   }
@@ -238,8 +250,131 @@ class FirebaseItemService {
   static Future<void> deleteCurrentAccount() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
-    await FirebaseFirestore.instance.collection('users').doc(user.uid).delete();
+    final firestore = FirebaseFirestore.instance;
+    final ownedItems = await firestore
+        .collection('items')
+        .where('reporterUid', isEqualTo: user.uid)
+        .get();
+    for (final item in ownedItems.docs) {
+      final deleted = await deleteItem(item.id);
+      if (!deleted) {
+        throw StateError(lastFirestoreError ?? 'Could not delete owned items');
+      }
+    }
+
+    final submittedClaims = await firestore
+        .collection('claims')
+        .where('claimantUid', isEqualTo: user.uid)
+        .get();
+    for (final claim in submittedClaims.docs) {
+      await _deleteClaimConversation(claim.reference);
+    }
+
+    final cleanupSnapshots = await Future.wait([
+      firestore
+          .collection('notifications')
+          .where('recipientUid', isEqualTo: user.uid)
+          .get(),
+      firestore
+          .collection('abuseReports')
+          .where('reporterUid', isEqualTo: user.uid)
+          .get(),
+      firestore
+          .collection('thankYouMessages')
+          .where('fromUid', isEqualTo: user.uid)
+          .get(),
+      firestore
+          .collection('thankYouMessages')
+          .where('toUid', isEqualTo: user.uid)
+          .get(),
+    ]);
+    final batch = firestore.batch();
+    final seen = <String>{};
+    for (final snapshot in cleanupSnapshots) {
+      for (final document in snapshot.docs) {
+        if (seen.add(document.reference.path)) batch.delete(document.reference);
+      }
+    }
+    batch.delete(firestore.collection('users').doc(user.uid));
+    await batch.commit();
+
+    try {
+      await FirebaseStorage.instance
+          .ref('profile_pictures/${user.uid}/profile.jpg')
+          .delete();
+    } on FirebaseException catch (error) {
+      if (error.code != 'object-not-found') rethrow;
+    }
     await user.delete();
+  }
+
+  static Future<bool> applyClaimDecision({
+    required Iterable<ClaimModel> claims,
+    required ItemModel item,
+    String? approvedClaimantUid,
+  }) async {
+    await initialize();
+    _resetLastWrite();
+    if (!isFirestoreAvailable) {
+      lastFirestoreError = lastInitializationError ?? 'Firestore unavailable';
+      return false;
+    }
+
+    lastFirestoreWriteSucceeded = await _safeFirestoreWrite(() async {
+      final firestore = FirebaseFirestore.instance;
+      final batch = firestore.batch();
+      for (final claim in claims) {
+        batch.update(firestore.collection('claims').doc(claim.id), {
+          'status': claim.status,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      }
+
+      final itemData = item.toJson()
+        ..remove('localImagePath')
+        ..remove('contactInfo')
+        ..remove('keptAt');
+      itemData.addAll({
+        'title': item.name,
+        'updatedAt': FieldValue.serverTimestamp(),
+        'contactInfo': FieldValue.delete(),
+        'keptAt': FieldValue.delete(),
+      });
+      batch.set(
+        firestore.collection('items').doc(item.id),
+        itemData,
+        SetOptions(merge: true),
+      );
+      if (approvedClaimantUid != null && approvedClaimantUid.isNotEmpty) {
+        batch.set(
+          firestore.collection('itemPrivate').doc(item.id),
+          {
+            'approvedClaimantUids': FieldValue.arrayUnion([
+              approvedClaimantUid,
+            ]),
+            'updatedAt': FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true),
+        );
+      }
+      await batch.commit();
+    });
+    return lastFirestoreWriteSucceeded;
+  }
+
+  static Future<void> _deleteClaimConversation(
+    DocumentReference<Map<String, dynamic>> claimRef,
+  ) async {
+    final firestore = FirebaseFirestore.instance;
+    final chatRef = firestore.collection('itemChats').doc(claimRef.id);
+    final messages = await chatRef.collection('messages').get();
+    final batch = firestore.batch();
+    for (final message in messages.docs) {
+      batch.delete(message.reference);
+    }
+    batch.delete(chatRef);
+    batch.delete(claimRef);
+    await batch.commit();
   }
 
   static Future<UserModel?> loadUserProfile(String email) async {
@@ -431,26 +566,28 @@ class FirebaseItemService {
 
     lastFirestoreWriteSucceeded = await _safeFirestoreWrite(() async {
       final firestore = FirebaseFirestore.instance;
+      final claims = await firestore
+          .collection('claims')
+          .where('itemId', isEqualTo: itemId)
+          .get();
       final related = await Future.wait([
-        firestore.collection('claims').where('itemId', isEqualTo: itemId).get(),
-        firestore
-            .collection('abuseReports')
-            .where('itemId', isEqualTo: itemId)
-            .get(),
         firestore
             .collection('thankYouMessages')
             .where('itemId', isEqualTo: itemId)
-            .get(),
-        firestore
-            .collection('itemChats')
-            .doc(itemId)
-            .collection('messages')
             .get(),
       ]);
       final batch = firestore.batch();
       batch.delete(firestore.collection('items').doc(itemId));
       batch.delete(firestore.collection('itemPrivate').doc(itemId));
-      batch.delete(firestore.collection('itemChats').doc(itemId));
+      for (final claim in claims.docs) {
+        final chat = firestore.collection('itemChats').doc(claim.id);
+        final messages = await chat.collection('messages').get();
+        for (final message in messages.docs) {
+          batch.delete(message.reference);
+        }
+        batch.delete(chat);
+        batch.delete(claim.reference);
+      }
       for (final snapshot in related) {
         for (final document in snapshot.docs) {
           batch.delete(document.reference);

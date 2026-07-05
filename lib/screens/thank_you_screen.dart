@@ -43,9 +43,21 @@ class _ThankYouScreenState extends State<ThankYouScreen> {
       createdAt: ItemFormHelper.formattedToday(),
     );
 
+    final uploaded = await FirebaseItemService.uploadThankYouMessage(message);
+    if (!uploaded) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            FirebaseItemService.lastFirestoreError ??
+                'Message could not be sent.',
+          ),
+        ),
+      );
+      return;
+    }
     thankYouMessages.add(message);
     await StorageService.saveThankYouMessages();
-    await FirebaseItemService.uploadThankYouMessage(message);
 
     if (!mounted) return;
     Navigator.pop(context);

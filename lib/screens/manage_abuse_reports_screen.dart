@@ -14,11 +14,27 @@ class ManageAbuseReportsScreen extends StatefulWidget {
 
 class _ManageAbuseReportsScreenState extends State<ManageAbuseReportsScreen> {
   Future<void> closeReport(int index) async {
+    final report = abuseReports[index];
+    final previousStatus = report.status;
     setState(() {
-      abuseReports[index].status = 'Closed';
+      report.status = 'Closed';
     });
+    final uploaded = await FirebaseItemService.uploadAbuseReport(report);
+    if (!uploaded) {
+      if (mounted) setState(() => report.status = previousStatus);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              FirebaseItemService.lastFirestoreError ??
+                  'Report could not be closed.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
     await StorageService.saveAbuseReports();
-    await FirebaseItemService.uploadAbuseReport(abuseReports[index]);
   }
 
   @override

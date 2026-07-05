@@ -82,16 +82,20 @@ class StorageService {
       final firestore = FirebaseFirestore.instance;
       final uid = FirebaseItemService.currentUid;
       if (uid == null) return;
-      final ownedClaims = await firestore
-          .collection('claims')
-          .where('itemOwnerUid', isEqualTo: uid)
-          .get();
-      final submittedClaims = await firestore
-          .collection('claims')
-          .where('claimantUid', isEqualTo: uid)
-          .get();
-      final privateItemSnapshots =
-          FirebaseItemService.currentEmail == 'admin@campus.edu.my'
+      final isAdmin = FirebaseItemService.currentEmail == 'admin@campus.edu.my';
+      final ownedClaims = isAdmin
+          ? await firestore.collection('claims').get()
+          : await firestore
+                .collection('claims')
+                .where('itemOwnerUid', isEqualTo: uid)
+                .get();
+      final submittedClaims = isAdmin
+          ? ownedClaims
+          : await firestore
+                .collection('claims')
+                .where('claimantUid', isEqualTo: uid)
+                .get();
+      final privateItemSnapshots = isAdmin
           ? [await firestore.collection('itemPrivate').get()]
           : await Future.wait([
               firestore
@@ -105,10 +109,12 @@ class StorageService {
             ]);
       final results = await Future.wait([
         firestore.collection('items').get(),
-        firestore
-            .collection('abuseReports')
-            .where('reporterUid', isEqualTo: uid)
-            .get(),
+        isAdmin
+            ? firestore.collection('abuseReports').get()
+            : firestore
+                  .collection('abuseReports')
+                  .where('reporterUid', isEqualTo: uid)
+                  .get(),
         firestore
             .collection('thankYouMessages')
             .where(
@@ -263,11 +269,13 @@ class StorageService {
   static Future<void> clearPrivateSessionData() async {
     final prefs = await SharedPreferences.getInstance();
     await Future.wait([
+      prefs.remove(_itemsKey),
       prefs.remove(_claimsKey),
       prefs.remove(_abuseReportsKey),
       prefs.remove(_thankYouMessagesKey),
       prefs.remove(_chatMessagesKey),
     ]);
+    sampleItems.clear();
     sampleClaims.clear();
     abuseReports.clear();
     thankYouMessages.clear();

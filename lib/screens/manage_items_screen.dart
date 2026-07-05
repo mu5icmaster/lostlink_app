@@ -40,11 +40,26 @@ class _ManageItemsScreenState extends State<ManageItemsScreen> {
   }
 
   Future<void> updateItemStatus(ItemModel item, String status) async {
+    final previousStatus = item.status;
     setState(() {
       item.status = status;
     });
-    await StorageService.saveItems();
     await FirebaseItemService.uploadItem(item: item);
+    if (!FirebaseItemService.lastFirestoreWriteSucceeded) {
+      if (mounted) setState(() => item.status = previousStatus);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              FirebaseItemService.lastFirestoreError ??
+                  'Item status could not be updated.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+    await StorageService.saveItems();
   }
 
   Future<void> removeItem(ItemModel item) async {
@@ -70,6 +85,20 @@ class _ManageItemsScreenState extends State<ManageItemsScreen> {
 
     if (confirmed != true) return;
 
+    final deleted = await FirebaseItemService.deleteItem(item.id);
+    if (!deleted) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              FirebaseItemService.lastFirestoreError ??
+                  'Item could not be removed.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
     setState(() {
       sampleItems.removeWhere((existingItem) => existingItem.id == item.id);
       sampleClaims.removeWhere((claim) => claim.item.id == item.id);
@@ -78,7 +107,6 @@ class _ManageItemsScreenState extends State<ManageItemsScreen> {
       thankYouMessages.removeWhere((message) => message.itemId == item.id);
     });
     await StorageService.saveAll();
-    await FirebaseItemService.deleteItem(item.id);
   }
 
   @override

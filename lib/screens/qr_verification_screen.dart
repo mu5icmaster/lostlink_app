@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../models/claim_model.dart';
-import '../models/item_model.dart';
-import '../data/sample_items.dart';
 import '../models/notification_model.dart';
 import '../services/firebase_item_service.dart';
 import '../services/storage_service.dart';
@@ -41,23 +39,29 @@ class QrVerificationScreen extends StatelessWidget {
       ),
     );
     if (confirmed != true) return;
+    final previousItemStatus = claim.item.status;
+    final previousClaimStatus = claim.status;
     claim.item.status = 'Returned';
     claim.status = 'Collected';
-    ItemModel? linkedLostItem;
-    if (claim.linkedLostItemId != null) {
-      for (final item in sampleItems) {
-        if (item.id == claim.linkedLostItemId) {
-          item.status = 'Returned';
-          linkedLostItem = item;
-        }
-      }
+    final updated = await FirebaseItemService.applyClaimDecision(
+      claims: [claim],
+      item: claim.item,
+    );
+    if (!updated) {
+      claim.item.status = previousItemStatus;
+      claim.status = previousClaimStatus;
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            FirebaseItemService.lastFirestoreError ??
+                'Handover could not be completed.',
+          ),
+        ),
+      );
+      return;
     }
     await StorageService.saveAll();
-    await FirebaseItemService.uploadClaim(claim);
-    await FirebaseItemService.uploadItem(item: claim.item);
-    if (linkedLostItem != null) {
-      await FirebaseItemService.uploadItem(item: linkedLostItem);
-    }
     await FirebaseItemService.uploadNotification(
       NotificationModel(
         id: 'collection-${claim.id}',

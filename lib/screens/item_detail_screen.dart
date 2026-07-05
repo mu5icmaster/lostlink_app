@@ -67,9 +67,23 @@ class _ItemDetailScreenState extends State<ItemDetailScreen> {
   bool get canChat => activeClaim != null;
 
   Future<void> updateStatus(String status) async {
+    final previousStatus = item.status;
     setState(() => item.status = status);
-    await StorageService.saveItems();
     await FirebaseItemService.uploadItem(item: item);
+    if (!FirebaseItemService.lastFirestoreWriteSucceeded) {
+      if (mounted) setState(() => item.status = previousStatus);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            FirebaseItemService.lastFirestoreError ??
+                'Report could not be updated.',
+          ),
+        ),
+      );
+      return;
+    }
+    await StorageService.saveItems();
     if (!mounted) return;
     ScaffoldMessenger.of(
       context,

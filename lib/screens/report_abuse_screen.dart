@@ -41,9 +41,21 @@ class _ReportAbuseScreenState extends State<ReportAbuseScreen> {
       createdAt: ItemFormHelper.formattedToday(),
     );
 
+    final uploaded = await FirebaseItemService.uploadAbuseReport(report);
+    if (!uploaded) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            FirebaseItemService.lastFirestoreError ??
+                'Report could not be submitted.',
+          ),
+        ),
+      );
+      return;
+    }
     abuseReports.add(report);
     await StorageService.saveAbuseReports();
-    await FirebaseItemService.uploadAbuseReport(report);
 
     if (!mounted) return;
     Navigator.pop(context);
