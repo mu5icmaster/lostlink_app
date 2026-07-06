@@ -95,17 +95,24 @@ service cloud.firestore {
       function claim() {
         return get(/databases/$(database)/documents/claims/$(claimId)).data;
       }
+      function claimAfterWrite() {
+        return getAfter(/databases/$(database)/documents/claims/$(claimId)).data;
+      }
       function participant() {
         return request.auth.uid == claim().claimantUid ||
           request.auth.uid == claim().itemOwnerUid;
       }
+      function participantAfterWrite() {
+        return request.auth.uid == claimAfterWrite().claimantUid ||
+          request.auth.uid == claimAfterWrite().itemOwnerUid;
+      }
       allow read: if campusUser() && participant();
-      allow create: if campusUser() && participant() &&
+      allow create: if campusUser() && participantAfterWrite() &&
         request.resource.data.claimId == claimId &&
-        request.resource.data.itemId == claim().itemId &&
+        request.resource.data.itemId == claimAfterWrite().itemId &&
         request.resource.data.participantUids.size() == 2 &&
         request.resource.data.participantUids.hasAll([
-          claim().claimantUid, claim().itemOwnerUid
+          claimAfterWrite().claimantUid, claimAfterWrite().itemOwnerUid
         ]);
       allow update: if false;
       allow delete: if campusUser() && (participant() || isAdmin());

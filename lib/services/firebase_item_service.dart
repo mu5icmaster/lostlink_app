@@ -111,7 +111,14 @@ class FirebaseItemService {
     lastFirestoreWriteSucceeded = await _safeFirestoreWrite(() async {
       final firestore = FirebaseFirestore.instance;
       final claimRef = firestore.collection('claims').doc(claim.id);
-      final existingClaim = await claimRef.get();
+      if (claim.status == 'Withdrawn') {
+        await claimRef.update({
+          'status': claim.status,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+        return;
+      }
+
       final claimData = {
         ...claim.toJson(),
         'claimantUid': claim.claimantUid.isEmpty
@@ -119,10 +126,6 @@ class FirebaseItemService {
             : claim.claimantUid,
         'updatedAt': FieldValue.serverTimestamp(),
       };
-      if (existingClaim.exists) {
-        await claimRef.set(claimData, SetOptions(merge: true));
-        return;
-      }
 
       final participants = [
         claim.claimantUid.isEmpty

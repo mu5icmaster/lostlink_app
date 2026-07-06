@@ -275,7 +275,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
-                  'Allowed emails: student, staff, lecturer, or admin campus domains. Admin demo: admin@campus.edu.my with any password of 6+ characters.',
+                  'Allowed emails: student, staff, lecturer, or admin campus domains.',
                   style: TextStyle(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                     fontSize: 13,
